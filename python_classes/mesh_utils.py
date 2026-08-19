@@ -41,6 +41,12 @@ def create_mesh_from_cpp(
     _add_uvs(mesh, cpp_mesh)
     mesh.update(calc_edges=True)
 
+    # The debug overlay caches a GPU batch built from these attributes; without
+    # this it would keep drawing the previous tree's colours.
+    from .viewport.foliage_debug_drawer import invalidate_debug_cache
+
+    invalidate_debug_cache()
+
 
 def _add_geometry(mesh: bpy.types.Mesh, cpp_mesh) -> None:
     """Add vertices and polygons to the mesh."""

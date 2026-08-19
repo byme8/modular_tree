@@ -11,7 +11,10 @@ blender_version_min = "4.3.1"
 license = ["SPDX:GPL-3.0-or-later"]
 copyright = ["2021 MaximeHerpin", "2026 Brandyn Britton"]
 tags = ["Mesh", "Add Curve"]
-wheels = []
+wheels = [
+    "./wheels/m_tree-5.5.2-cp311-cp311-win_amd64.whl",
+    "./wheels/m_tree-5.5.2-cp313-cp313-win_amd64.whl"
+]
 platforms = ["windows-x64", "macos-x64", "macos-arm64", "linux-x64"]
 
 [permissions]

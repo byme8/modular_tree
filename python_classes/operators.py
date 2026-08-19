@@ -247,6 +247,7 @@ class ExportPivotPainter(bpy.types.Operator):
             ("UE5", "Unreal Engine 5", "Export for UE5 with Nanite support"),
             ("UE4", "Unreal Engine 4", "Export for UE4 Pivot Painter 2.0"),
             ("UNITY", "Unity", "Export vertex colors for Unity"),
+            ("FOLIAGE", "Foliage Streams", "Write wind and shading vertex streams onto the mesh"),
         ],
         default="UE5",
     )
@@ -255,6 +256,82 @@ class ExportPivotPainter(bpy.types.Operator):
         name="Export Path",
         subtype="DIR_PATH",
         default="//pivot_painter/",
+    )
+    occlusion_base: bpy.props.FloatProperty(
+        name="Occlusion Base",
+        description="Ambient occlusion at the branch base; the tip is always 1",
+        default=0.25,
+        min=0.0,
+        max=1.0,
+    )
+    translucency_tip: bpy.props.FloatProperty(
+        name="Translucency Tip",
+        description=(
+            "Back-lit transmission at the branch tip. Wood is opaque, so this "
+            "belongs at 0 for trunks and branches"
+        ),
+        default=0.0,
+        min=0.0,
+        max=1.0,
+    )
+    normal_blend: bpy.props.FloatProperty(
+        name="Normal Blend",
+        description="Blend from geometric normals (0) to flat up (1) for the whole plant",
+        default=0.0,
+        min=0.0,
+        max=1.0,
+    )
+    trunk_base_stiffness: bpy.props.FloatProperty(
+        name="Trunk Base",
+        description="Trunk stiffness at the root; the rooted ring is always pinned rigid",
+        default=1.0,
+        min=0.0,
+        max=1.0,
+    )
+    trunk_tip_stiffness: bpy.props.FloatProperty(
+        name="Trunk Tip",
+        description="Trunk stiffness at the top; below the base value the trunk bends",
+        default=1.0,
+        min=0.0,
+        max=1.0,
+    )
+    branch_stiffness: bpy.props.FloatProperty(
+        name="Branch Scale",
+        description="Scale on the radius-driven side-branch stiffness curve",
+        default=1.0,
+        min=0.0,
+        max=1.0,
+    )
+    junction_falloff: bpy.props.FloatProperty(
+        name="Junction Falloff",
+        description=(
+            "How much softer a branch may be than the limb carrying it; low "
+            "values let branches whip independently of their parent"
+        ),
+        default=0.6,
+        min=0.1,
+        max=1.0,
+    )
+    build_bone_rig: bpy.props.BoolProperty(
+        name="Build Bone Rig",
+        description=(
+            "Also generate a bone rig and its binding stream. Bones compose "
+            "rotations down the hierarchy, so a branch follows the trunk's lean "
+            "instead of shearing against it"
+        ),
+        default=False,
+    )
+    segments_per_chain: bpy.props.IntProperty(
+        name="Bones Per Branch",
+        description="Bones each branch chain is split into; one moves it rigidly",
+        default=4,
+        min=1,
+        max=16,
+    )
+    create_armature: bpy.props.BoolProperty(
+        name="Create Armature",
+        description="Create a Blender armature mirroring the rig, for inspection",
+        default=True,
     )
 
     def execute(self, context):
@@ -270,9 +347,20 @@ class ExportPivotPainter(bpy.types.Operator):
 
         exporter = PivotPainterExporter(
             mesh=mesh_data,
+            mesh_object=obj,
             export_format=ExportFormat[self.export_format],
             texture_size=self.texture_size,
             export_path=self.export_path,
+            occlusion_base=self.occlusion_base,
+            translucency_tip=self.translucency_tip,
+            normal_blend=self.normal_blend,
+            trunk_base_stiffness=self.trunk_base_stiffness,
+            trunk_tip_stiffness=self.trunk_tip_stiffness,
+            branch_stiffness=self.branch_stiffness,
+            junction_falloff=self.junction_falloff,
+            build_bone_rig=self.build_bone_rig,
+            segments_per_chain=self.segments_per_chain,
+            create_armature=self.create_armature,
         )
 
         result = exporter.export(obj.name)
@@ -293,7 +381,21 @@ class ExportPivotPainter(bpy.types.Operator):
         layout = self.layout
         layout.prop(self, "object_name")
         layout.prop(self, "export_format")
-        if self.export_format != "UNITY":
+        if self.export_format == "FOLIAGE":
+            layout.prop(self, "trunk_base_stiffness")
+            layout.prop(self, "trunk_tip_stiffness")
+            layout.prop(self, "branch_stiffness")
+            layout.prop(self, "junction_falloff")
+            layout.prop(self, "occlusion_base")
+            layout.prop(self, "translucency_tip")
+            layout.prop(self, "normal_blend")
+
+            rig_box = layout.box()
+            rig_box.prop(self, "build_bone_rig")
+            if self.build_bone_rig:
+                rig_box.prop(self, "segments_per_chain")
+                rig_box.prop(self, "create_armature")
+        elif self.export_format != "UNITY":
             layout.prop(self, "texture_size")
             layout.prop(self, "export_path")
 

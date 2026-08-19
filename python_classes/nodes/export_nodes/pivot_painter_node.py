@@ -17,6 +17,7 @@ class MTreePivotPainterExport(bpy.types.Node, MtreeNode):
             ("UE5", "Unreal Engine 5", "Export for UE5 with Nanite support"),
             ("UE4", "Unreal Engine 4", "Export for UE4 Pivot Painter 2.0"),
             ("UNITY", "Unity", "Export vertex colors for Unity"),
+            ("FOLIAGE", "Foliage Streams", "Write wind and shading vertex streams onto the mesh"),
         ],
         default="UE5",
     )
@@ -25,6 +26,16 @@ class MTreePivotPainterExport(bpy.types.Node, MtreeNode):
         name="Export Path",
         subtype="DIR_PATH",
         default="//pivot_painter/",
+    )
+    create_armature: bpy.props.BoolProperty(
+        name="Create Armature",
+        description=(
+            "Create a Blender armature mirroring the rig. The engine reads the "
+            "bone records and the binding stream, not this armature, but a rig "
+            "is invisible in its exported form and this is what makes it "
+            "inspectable in the viewport"
+        ),
+        default=True,
     )
 
     # Status feedback
@@ -44,7 +55,35 @@ class MTreePivotPainterExport(bpy.types.Node, MtreeNode):
 
         layout.prop(self, "export_format")
 
-        if self.export_format != "UNITY":
+        if self.export_format == "FOLIAGE":
+            # Stiffness and shading are authoring decisions, so they live on the
+            # Foliage Wind node rather than being duplicated here.
+            from .foliage_wind_node import MTreeFoliageWind
+
+            has_wind_node = any(
+                node.bl_idname == MTreeFoliageWind.bl_idname
+                for node in self.get_node_tree().nodes
+            )
+            if not has_wind_node:
+                hint = layout.row()
+                hint.label(text="No Foliage Wind node; using defaults", icon="INFO")
+
+            # Whether to rig at all, and how finely, are wind-authoring
+            # decisions and live on the Foliage Wind node. Only the Blender-side
+            # preview toggle belongs here, and only when a rig is actually being
+            # built — otherwise it offers to create an armature for a rig that
+            # does not exist.
+            from .foliage_wind_node import find_foliage_wind_settings
+
+            if find_foliage_wind_settings(self.get_node_tree())["build_bone_rig"]:
+                rig_box = layout.box()
+                rig_box.label(text="Bone Rig")
+                rig_box.prop(self, "create_armature")
+
+            debug_box = layout.box()
+            debug_box.label(text="Debug View")
+            debug_box.prop(context.scene, "mtree_foliage_debug_channel", text="")
+        elif self.export_format != "UNITY":
             layout.prop(self, "texture_size")
             layout.prop(self, "export_path")
 
@@ -90,12 +129,18 @@ class MTreePivotPainterExport(bpy.types.Node, MtreeNode):
             return
 
         # Use the export operator
+        from .foliage_wind_node import find_foliage_wind_settings
+
+        settings = find_foliage_wind_settings(self.get_node_tree())
+
         result = bpy.ops.mtree.export_pivot_painter(
             "EXEC_DEFAULT",
             object_name=obj.name,
             export_format=self.export_format,
             texture_size=self.texture_size,
             export_path=self.export_path,
+            create_armature=self.create_armature,
+            **settings,
         )
 
         if result == {"FINISHED"}:

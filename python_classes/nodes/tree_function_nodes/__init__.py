@@ -7,9 +7,18 @@ from .growth_node import GrowthNode
 from .leaf_shape_node import LeafShapeNode
 from .pipe_radius_node import PipeRadiusNode
 from .tree_mesher_node import TreeMesherNode
+from .tree_variants_node import MTreeVariants
 from .trunk_node import TrunkNode
 
-classes = [BranchNode, GrowthNode, LeafShapeNode, TreeMesherNode, TrunkNode, PipeRadiusNode]
+classes = [
+    BranchNode,
+    GrowthNode,
+    LeafShapeNode,
+    TreeMesherNode,
+    TrunkNode,
+    PipeRadiusNode,
+    MTreeVariants,
+]
 
 
 def register():

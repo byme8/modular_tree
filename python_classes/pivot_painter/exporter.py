@@ -16,6 +16,7 @@ class ExportFormat(Enum):
     UE5 = "UE5"
     UE4 = "UE4"
     UNITY = "UNITY"
+    FOLIAGE = "FOLIAGE"
 
 
 @dataclass
@@ -53,11 +54,35 @@ class PivotPainterExporter:
         export_format: ExportFormat,
         texture_size: int = 1024,
         export_path: str = "",
+        occlusion_base: float = 0.25,
+        translucency_tip: float = 0.0,
+        normal_blend: float = 0.0,
+        trunk_base_stiffness: float = 1.0,
+        trunk_tip_stiffness: float = 1.0,
+        branch_stiffness: float = 1.0,
+        junction_falloff: float = 0.6,
+        build_bone_rig: bool = False,
+        segments_per_chain: int = 4,
+        create_armature: bool = True,
+        mesh_object: bpy.types.Object | None = None,
     ):
         self.mesh = mesh
+        # Only the rig needs this: the armature modifier and vertex groups live
+        # on the object, not on the mesh data every other format writes to.
+        self.mesh_object = mesh_object
         self.export_format = export_format
         self.texture_size = texture_size
         self.export_path = export_path
+        self.occlusion_base = occlusion_base
+        self.translucency_tip = translucency_tip
+        self.normal_blend = normal_blend
+        self.trunk_base_stiffness = trunk_base_stiffness
+        self.trunk_tip_stiffness = trunk_tip_stiffness
+        self.branch_stiffness = branch_stiffness
+        self.junction_falloff = junction_falloff
+        self.build_bone_rig = build_bone_rig
+        self.segments_per_chain = segments_per_chain
+        self.create_armature = create_armature
 
     @property
     def has_leaf_data(self) -> bool:
@@ -87,6 +112,12 @@ class PivotPainterExporter:
         Returns:
             ExportResult indicating success or failure.
         """
+        # The foliage format derives its streams from a different attribute set
+        # (it needs radius, and does not need the pivot textures), so it runs its
+        # own validation rather than the Pivot Painter one.
+        if self.export_format == ExportFormat.FOLIAGE:
+            return self._export_foliage()
+
         validation_error = self.validate()
         if validation_error:
             return validation_error
@@ -95,6 +126,65 @@ class PivotPainterExporter:
             return self._export_unity()
         else:
             return self._export_unreal(object_name)
+
+    def _export_foliage(self) -> ExportResult:
+        """Write foliage wind and shading vertex streams onto the mesh.
+
+        When a rig is requested the bone binding is written too. The two are not
+        alternatives at export time even though they are at *render* time: a
+        skinned mesh still reads phase for density fade and still reads every
+        shading channel, so the streams are written either way. What the rig
+        replaces is the vertex-displacement wind, which the engine turns off by
+        keyword when it finds bones.
+        """
+        from .formats.foliage import FoliageExporter
+
+        exporter = FoliageExporter(
+            mesh=self.mesh,
+            occlusion_base=self.occlusion_base,
+            translucency_tip=self.translucency_tip,
+            normal_blend=self.normal_blend,
+            trunk_base_stiffness=self.trunk_base_stiffness,
+            trunk_tip_stiffness=self.trunk_tip_stiffness,
+            branch_stiffness=self.branch_stiffness,
+            junction_falloff=self.junction_falloff,
+        )
+        result = exporter.export()
+
+        if not result.success or not self.build_bone_rig:
+            return result
+
+        rig_result = self._export_foliage_rig()
+
+        # A failed rig is reported as a failure even though the streams landed:
+        # a mesh carrying stream wind and a broken binding is worse than one
+        # carrying stream wind alone, because the engine will trust the binding.
+        if not rig_result.success:
+            return ExportResult(
+                success=False,
+                message=f"Streams written, but rig failed: {rig_result.message}",
+            )
+
+        return ExportResult(
+            success=True,
+            message=f"{result.message} {rig_result.message}",
+        )
+
+    def _export_foliage_rig(self) -> ExportResult:
+        """Build the bone rig, write its binding, and bind it for preview."""
+        from .formats.foliage_rig import FoliageRigExporter
+
+        exporter = FoliageRigExporter(
+            mesh=self.mesh,
+            mesh_object=self.mesh_object,
+            segments_per_chain=self.segments_per_chain,
+            trunk_base_stiffness=self.trunk_base_stiffness,
+            trunk_tip_stiffness=self.trunk_tip_stiffness,
+            branch_stiffness=self.branch_stiffness,
+            junction_falloff=self.junction_falloff,
+            create_armature=self.create_armature,
+        )
+        return exporter.export()
 
     def _export_unity(self) -> ExportResult:
         """Export vertex colors for Unity wind shader."""

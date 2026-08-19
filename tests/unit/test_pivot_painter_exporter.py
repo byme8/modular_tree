@@ -23,7 +23,7 @@ class TestExportFormat:
 
     def test_all_formats_exist(self):
         """All expected formats are defined."""
-        expected = {"UE5", "UE4", "UNITY"}
+        expected = {"UE5", "UE4", "UNITY", "FOLIAGE"}
         actual = {f.value for f in ExportFormat}
         assert expected == actual
 

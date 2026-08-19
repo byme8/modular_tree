@@ -16,6 +16,7 @@ paths_to_add = [
     str(PYTHON_CLASSES),
     str(PYTHON_CLASSES / "presets"),
     str(PYTHON_CLASSES / "pivot_painter"),
+    str(PYTHON_CLASSES / "pivot_painter" / "formats"),
     str(PYTHON_CLASSES / "viewport"),
 ]
 

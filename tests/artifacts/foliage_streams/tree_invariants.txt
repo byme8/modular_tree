@@ -1,0 +1,14 @@
+# per-blade invariants on the synthetic tree
+# vertices=24
+
+ stem_id  verts      phase   extent_m   radius  stiff_min  stiff_max  along_min  along_max
+       0     10   0.000000   4.000000 0.500000   1.000000   1.000000   0.000000   1.000000
+       1      8   0.618034   2.000000 0.200000   0.632456   0.632456   0.000000   1.000000
+       2      6   0.236068   1.000000 0.050000   0.379473   0.379473   0.000000   1.000000
+
+# bounds
+rest_min=(0.000000, -0.500000, 0.000000)
+rest_max=(2.000000, 1.000000, 4.000000)
+wind_reach=1.000000
+expanded_min=(-1.000000, -1.500000, 0.000000)
+expanded_max=(3.000000, 2.000000, 4.000000)

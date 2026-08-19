@@ -15,6 +15,7 @@ node_categories = [
         "Mesher",
         items=[
             NodeItem("mt_MesherNode"),
+            NodeItem("mt_VariantsNode"),
         ],
     ),
     MTreeNodeCategory(
@@ -59,6 +60,8 @@ node_categories = [
         "Export",
         items=[
             NodeItem("mt_PivotPainterExportNode"),
+            NodeItem("mt_FoliageWindNode"),
+            NodeItem("mt_MeshExportNode"),
         ],
     ),
 ]
