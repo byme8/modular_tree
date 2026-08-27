@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="420" viewBox="0 0 420 420">
+  <rect width="420" height="420" fill="#ffffff"/>
+  <line x1="0" y1="400" x2="420" y2="400" stroke="#cccccc" stroke-width="1"/>
+  <line x1="210.0" y1="0" x2="210.0" y2="420" stroke="#eeeeee" stroke-width="1"/>
+  <polyline points="210.0000,400.0000 210.0000,365.0000 210.0000,330.0000 210.0000,295.0000 210.0000,260.0000" fill="none" stroke="rgb(30,30,200)" stroke-width="3.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <polyline points="210.0000,400.0000 211.0994,365.0173 213.2970,330.0863 216.5908,295.2417 220.9775,260.5177" fill="none" stroke="rgb(60,60,200)" stroke-width="3.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <polyline points="210.0000,400.0000 214.3867,365.2760 223.0908,331.3756 235.9752,298.8334 252.8365,268.1627" fill="none" stroke="rgb(90,90,200)" stroke-width="3.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <polyline points="210.0000,400.0000 219.7647,366.3897 238.5186,336.8382 264.7725,313.6923 296.4415,298.7901" fill="none" stroke="rgb(120,120,200)" stroke-width="3.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <polyline points="210.0000,400.0000 226.8614,369.3293 256.4129,350.5753 291.3438,348.3777 326.3393,348.9402" fill="none" stroke="rgb(150,150,200)" stroke-width="3.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <polyline points="210.0000,400.0000 234.7487,375.2513 269.7487,375.2513 304.7487,375.2513 339.7487,375.2513" fill="none" stroke="rgb(180,180,200)" stroke-width="3.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <text x="8" y="16" font-family="monospace" font-size="11" fill="#333333">uniform stiffness 1.0 (dark) to 0.0 (light), wind +X</text>
+</svg>

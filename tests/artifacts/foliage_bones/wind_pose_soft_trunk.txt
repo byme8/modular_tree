@@ -1,0 +1,27 @@
+# wind pose: soft_trunk (trunk base 0.1, tip 0)
+# 16 bones, 52 vertices, antiparallel band 0.4
+
+rest_drift_at_zero_strength 0.000000
+peak_displacement 4.385852
+
+# wind blowing along +X at full strength
+most_upwind_travel 0.000000
+largest_drop -2.190372
+
+# posed direction of each chain tip; Z below zero points at the ground
+stem0_tip 0.986828 0.000000 -0.161774
+stem1_tip 0.996496 0.000000 0.083645
+stem2_tip 0.998317 0.057987 0.000000
+stem3_tip 0.992908 0.000000 0.118885
+
+# largest vertex move between adjacent 0.5 deg samples
+worst_jump 0.027683 at_degrees 270.500000
+
+# interpolating N baked directions against the true pose between them
+# columns: directions | max_error | ratio_to_previous
+  8 0.279925 -
+ 16 0.072875 0.260338
+ 32 0.018465 0.253372
+
+# violations
+  none

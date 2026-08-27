@@ -1,0 +1,7 @@
+# morph targets are deltas against an unmoved rest pose
+
+zero_strength_drift 0.000000
+rebake_difference 0.000000
+
+# violations
+  none

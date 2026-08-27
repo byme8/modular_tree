@@ -1,0 +1,11 @@
+# asset ownership after two builds and one rebuild
+
+              object           collection                 armature   verts
+snapshot_variants_000    snapshot_variants                        -    1408
+snapshot_variants_001    snapshot_variants                        -    1408
+
+# invariants
+distinct armature names: 2/2
+each asset in exactly one collection: True
+no name collisions: True
+variants node carries own mesh settings: False

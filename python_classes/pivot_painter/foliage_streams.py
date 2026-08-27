@@ -20,10 +20,17 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-try:  # package import (addon runtime)
-    from .core import compute_stem_id_hash
-except ImportError:  # flat import (test harness puts pivot_painter/ on sys.path)
-    from core import compute_stem_id_hash
+GOLDEN_RATIO_CONJUGATE = 0.61803398875
+
+
+def compute_stem_id_hash(stem_ids: NDArray[np.floating]) -> NDArray[np.floating]:
+    """Hash stem ids into [0, 1).
+
+    The golden ratio conjugate spreads neighbouring branches across the whole
+    range, instead of letting them land on neighbouring phases and sway in
+    visible lockstep.
+    """
+    return np.mod(stem_ids * GOLDEN_RATIO_CONJUGATE, 1.0)
 
 # A vertex whose along-chain position is within this fraction of the chain base
 # is treated as rooted, and its stiffness is pinned to exactly 1.0.

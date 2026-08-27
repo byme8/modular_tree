@@ -1,70 +1,62 @@
-"""Tests for seed-variant generation.
-
-The failure this guards against is silent: if the seed walk misses nodes, every
-variant still generates and still looks like a tree, but they share branch
-structure and only the trunk differs. That reads as "the variants are a bit
-samey" rather than as a bug.
-
-The node module itself imports bpy, so the pure walk logic is exercised here
-against stand-in node objects with the same shape as the Blender ones.
+"""If the seed offset fails to reach every function node, every variant still
+generates and still looks like a tree, but they share branch structure and only
+the trunk differs — a bug that reads as "the variants are a bit samey".
 """
 
 from pathlib import Path
 
 import pytest
+from conftest import load_node_base
 
-# The node module imports bpy at module scope, so the pure function under test
-# is re-declared against the same contract rather than imported. This mirrors
-# collect_seed_sockets in nodes/tree_function_nodes/tree_variants_node.py.
-SEED_PROPERTY = "seed"
+node_base = load_node_base()
+SEED_PROPERTY = node_base.SEED_PROPERTY
+MtreeFunctionNode = node_base.MtreeFunctionNode
+
 SEED_STRIDE = 7919
+
+NODE_NAMES = ("trunk", "branch_a", "sub_branch", "branch_b")
 
 ARTIFACT_DIR = Path(__file__).parent.parent / "artifacts" / "tree_variants"
 
 
 class FakeSocket:
-    """Stands in for a Blender input socket carrying a property."""
-
-    def __init__(self, property_name, property_value=0):
+    def __init__(self, property_name, property_value=0, bl_idname="mt_IntSocket"):
         self.property_name = property_name
         self.property_value = property_value
+        self.bl_idname = bl_idname
+        self.is_property = True
 
 
-class FakeNode:
-    """Stands in for an MtreeNode with inputs and child nodes."""
+class FakeFunction:
+    def __init__(self):
+        object.__setattr__(self, "children", [])
+        object.__setattr__(self, "assigned", {})
+
+    def __setattr__(self, name, value):
+        self.assigned[name] = value
+
+    def add_child(self, child):
+        self.children.append(child)
+
+
+class FakeNode(MtreeFunctionNode):
+    """Must subclass the real node: construct_function isinstance-checks its
+    children, so a duck-typed stand-in silently builds a childless tree.
+    """
+
+    exposed_parameters = []
 
     def __init__(self, name, sockets=None, children=None):
         self.name = name
         self.inputs = sockets or []
         self._children = children or []
+        self.tree_function = FakeFunction
 
     def get_child_nodes(self):
         return self._children
 
 
-def collect_seed_sockets(root_node, seen=None):
-    """Mirror of the production walk; see module docstring."""
-    if seen is None:
-        seen = set()
-
-    if root_node is None or root_node.name in seen:
-        return []
-    seen.add(root_node.name)
-
-    sockets = [
-        socket
-        for socket in root_node.inputs
-        if getattr(socket, "property_name", "") == SEED_PROPERTY
-    ]
-
-    for child in root_node.get_child_nodes():
-        sockets.extend(collect_seed_sockets(child, seen))
-
-    return sockets
-
-
 def make_graph():
-    """Build a trunk -> 2 branches -> 1 sub-branch graph, each with a seed."""
     sub = FakeNode(
         "sub_branch",
         [FakeSocket("seed", 5), FakeSocket("length", 1.0)],
@@ -76,7 +68,7 @@ def make_graph():
     )
     branch_b = FakeNode(
         "branch_b",
-        [FakeSocket("seed", 4)],
+        [FakeSocket("seed", 4), FakeSocket("resolution", 8)],
     )
     trunk = FakeNode(
         "trunk",
@@ -86,141 +78,133 @@ def make_graph():
     return trunk
 
 
-class TestSeedCollection:
-    """M14: every seed in the graph must be found, not just the trunk's."""
+def build_depth_first(trunk, seed_offset=0):
+    order = []
 
-    def test_walk_finds_every_seed(self):
+    def descend(func):
+        order.append(func)
+        for child in func.children:
+            descend(child)
+
+    descend(trunk.construct_function(seed_offset))
+    return {NODE_NAMES[i]: f.assigned for i, f in enumerate(order)}
+
+
+def seed_state(trunk, seed_offset):
+    built = build_depth_first(trunk, seed_offset)
+    return tuple(built[n]["seed"] for n in NODE_NAMES)
+
+
+class TestSeedPropagation:
+    """M1/M2/M5: the offset must reach every node and nothing but the seeds."""
+
+    @pytest.mark.parametrize("offset", [0, 1, SEED_STRIDE, 7 * SEED_STRIDE])
+    def test_offset_propagates(self, offset):
+        built = build_depth_first(make_graph(), offset)
+
+        authored = {"trunk": 1, "branch_a": 3, "sub_branch": 5, "branch_b": 4}
+        for node_name, seed in authored.items():
+            assert built[node_name]["seed"] == seed + offset, (
+                f"{node_name} seed did not receive the offset"
+            )
+
+        # TEST_POINT: an offset leaking onto resolution or length corrupts
+        # geometry while still producing varied trees, so it reads as working.
+        assert built["trunk"]["length"] == 14.0
+        assert built["trunk"]["start_radius"] == 0.3
+        assert built["branch_a"]["length"] == 4.0
+        assert built["sub_branch"]["length"] == 1.0
+        assert built["branch_b"]["resolution"] == 8
+
+    def test_graph_not_mutated(self):
+        """M3: building must not write back to any socket."""
         trunk = make_graph()
-        sockets = collect_seed_sockets(trunk)
 
-        # Four seed-carrying nodes: trunk, two branches, one sub-branch.
-        assert len(sockets) == 4
-        assert sorted(s.property_value for s in sockets) == [1, 3, 4, 5]
+        def snapshot(node, seen=None):
+            if seen is None:
+                seen = set()
+            if node.name in seen:
+                return {}
+            seen.add(node.name)
+            values = {
+                (node.name, s.property_name): s.property_value for s in node.inputs
+            }
+            for child in node.get_child_nodes():
+                values.update(snapshot(child, seen))
+            return values
 
-        # Non-seed sockets must not be swept up and offset.
-        assert all(s.property_name == "seed" for s in sockets)
+        before = snapshot(trunk)
 
-    def test_walk_survives_loops(self):
-        """A cyclic graph must terminate rather than recursing forever."""
-        a = FakeNode("a", [FakeSocket("seed", 1)])
-        b = FakeNode("b", [FakeSocket("seed", 2)], [a])
-        a._children = [b]  # close the loop
+        for variant in range(10):
+            trunk.construct_function(variant * SEED_STRIDE)
 
-        sockets = collect_seed_sockets(a)
-        assert len(sockets) == 2
-
-    def test_graph_without_seeds(self):
-        """A graph carrying no seeds yields nothing rather than raising."""
-        node = FakeNode("plain", [FakeSocket("length", 3.0)])
-        assert collect_seed_sockets(node) == []
-        assert collect_seed_sockets(None) == []
+        assert snapshot(trunk) == before
 
 
 class TestVariantOffsets:
-    """M16: distinct variants must not collide on the same seed set."""
+    """M4: distinct variants must not collide on the same seed set."""
 
-    def test_variants_are_distinct(self):
+    def test_variant_sweep(self):
         trunk = make_graph()
-        sockets = collect_seed_sockets(trunk)
-        originals = [s.property_value for s in sockets]
 
         seen = {}
         for variant in range(20):
-            offset = variant * SEED_STRIDE
-            state = tuple(o + offset for o in originals)
-            assert state not in seen, f"variant {variant} collides with {seen.get(state)}"
+            state = seed_state(trunk, variant * SEED_STRIDE)
+            assert state not in seen, f"variant {variant} collides with {seen[state]}"
             seen[state] = variant
 
         assert len(seen) == 20
 
     def test_stride_avoids_neighbour_collisions(self):
-        """Adjacent variants must not alias onto nodes whose seeds differ by 1.
-
-        With a stride of 1, variant N on a node seeded 2 produces the same seed
-        as variant N+1 on a node seeded 1 — neighbouring variants would share
-        sub-structure. The stride is what prevents that.
+        """With a stride of 1, variant N on a node seeded 2 produces the same
+        seed as variant N+1 on a node seeded 1 — they would share substructure.
         """
-        originals = [1, 2, 3, 4]
+        trunk = make_graph()
 
         collisions = 0
         for variant in range(20):
-            current = {o + variant * SEED_STRIDE for o in originals}
-            following = {o + (variant + 1) * SEED_STRIDE for o in originals}
+            current = set(seed_state(trunk, variant * SEED_STRIDE))
+            following = set(seed_state(trunk, (variant + 1) * SEED_STRIDE))
             collisions += len(current & following)
 
         assert collisions == 0
 
     def test_base_seed_shifts_the_whole_set(self):
-        """Changing base seed yields a different family of variants."""
-        originals = [1, 3, 4, 5]
-
-        family_a = {
-            tuple(o + (0 + v) * SEED_STRIDE for o in originals) for v in range(20)
-        }
-        family_b = {
-            tuple(o + (100 + v) * SEED_STRIDE for o in originals) for v in range(20)
-        }
-
-        assert not (family_a & family_b)
-
-
-class TestSeedRestoration:
-    """M15: a run must leave the authored configuration untouched."""
-
-    @pytest.mark.parametrize("fail_at", [None, 0, 3, 9])
-    def test_seeds_restored_even_on_failure(self, fail_at):
-        """Seeds return to their authored values whether or not a build throws."""
         trunk = make_graph()
-        sockets = collect_seed_sockets(trunk)
-        originals = [s.property_value for s in sockets]
 
-        def run():
-            saved = [s.property_value for s in sockets]
-            try:
-                for variant in range(10):
-                    offset = variant * SEED_STRIDE
-                    for socket, original in zip(sockets, saved, strict=True):
-                        socket.property_value = original + offset
-                    if fail_at is not None and variant == fail_at:
-                        raise RuntimeError("build failed")
-            except RuntimeError:
-                pass
-            finally:
-                for socket, original in zip(sockets, saved, strict=True):
-                    socket.property_value = original
+        def family(base):
+            return {seed_state(trunk, (base + v) * SEED_STRIDE) for v in range(20)}
 
-        run()
+        assert not (family(0) & family(100))
 
-        assert [s.property_value for s in sockets] == originals
 
-    def test_snapshot(self):
-        """Record the seed assignment table for inspection."""
-        trunk = make_graph()
-        sockets = collect_seed_sockets(trunk)
-        originals = [s.property_value for s in sockets]
+def test_snapshot():
+    trunk = make_graph()
+    authored = seed_state(trunk, 0)
 
-        # Stable node order for a diffable artifact.
-        names = ["trunk", "branch_a", "sub_branch", "branch_b"]
+    lines = [
+        "# seed assignment per variant",
+        f"# stride={SEED_STRIDE}  authored seeds={list(authored)}",
+        "",
+        f"{'variant':>8} " + " ".join(f"{n:>12}" for n in NODE_NAMES),
+    ]
+    for variant in range(8):
+        row = " ".join(f"{s:>12}" for s in seed_state(trunk, variant * SEED_STRIDE))
+        lines.append(f"{variant:>8} {row}")
 
-        lines = [
-            "# seed assignment per variant",
-            f"# stride={SEED_STRIDE}  authored seeds={originals}",
-            "",
-            f"{'variant':>8} " + " ".join(f"{n:>12}" for n in names),
-        ]
-        for variant in range(8):
-            offset = variant * SEED_STRIDE
-            row = " ".join(f"{o + offset:>12}" for o in originals)
-            lines.append(f"{variant:>8} {row}")
+    after = seed_state(trunk, 0)
+    distinct = len({seed_state(trunk, v * SEED_STRIDE) for v in range(8)})
 
-        lines += [
-            "",
-            "# invariants",
-            f"authored seeds unchanged after run: {[s.property_value for s in sockets] == originals}",
-            f"distinct variant states: {len({tuple(o + v * SEED_STRIDE for o in originals) for v in range(8)})}/8",
-        ]
+    lines += [
+        "",
+        "# invariants",
+        f"authored seeds unchanged after run: {after == authored}",
+        f"distinct variant states: {distinct}/8",
+    ]
 
-        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-        (ARTIFACT_DIR / "seed_assignment.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    (ARTIFACT_DIR / "seed_assignment.txt").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
 
-        assert [s.property_value for s in sockets] == originals
+    assert after == authored

@@ -1,10 +1,10 @@
 from bpy.utils import register_class, unregister_class
 
+from .foliage_export_node import MTreeFoliageExport
 from .foliage_wind_node import MTreeFoliageWind
 from .mesh_export_node import MTreeMeshExport
-from .pivot_painter_node import MTreePivotPainterExport
 
-classes = [MTreePivotPainterExport, MTreeFoliageWind, MTreeMeshExport]
+classes = [MTreeFoliageWind, MTreeFoliageExport, MTreeMeshExport]
 
 
 def register():

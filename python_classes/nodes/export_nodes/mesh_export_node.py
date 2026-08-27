@@ -1,27 +1,14 @@
-"""Node for exporting generated tree meshes to FBX or glTF.
-
-Blender is Z-up right-handed; Unity is Y-up left-handed. Blender's FBX exporter
-can perform that conversion, but its defaults do not: a tree exported with stock
-settings arrives in Unity lying on its side or rotated ninety degrees, and the
-usual workaround — rotating the object in Blender before exporting — bakes a
-non-identity rotation into the transform that then fights every downstream tool.
-
-This node exports with the axis settings that make a Z-up Blender tree stand
-upright in Unity, with `apply_unit_scale` and `bake_space_transform` set so the
-resulting object carries an identity rotation rather than a corrective one.
-"""
 
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 
 import bpy
 
 from ..base_types.node import MtreeNode
 
-# Axis conventions of the supported engines, as Blender's FBX exporter expects
-# them. Blender's own axes are Z-up / -Y-forward.
 ENGINE_AXES = {
     "UNITY": {"axis_up": "Y", "axis_forward": "-Z"},
     "UNREAL": {"axis_up": "Z", "axis_forward": "-Y"},
@@ -30,7 +17,6 @@ ENGINE_AXES = {
 
 
 class MTreeMeshExport(bpy.types.Node, MtreeNode):
-    """Export generated tree meshes with engine-correct axis conversion"""
 
     bl_idname = "mt_MeshExportNode"
     bl_label = "Mesh Export"
@@ -97,8 +83,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
     status_message: bpy.props.StringProperty(default="")
     status_is_error: bpy.props.BoolProperty(default=False)
 
-    # Cached result of the last payload check. Stored rather than recomputed
-    # because draw() must stay cheap; see the note in draw().
     payload_summary: bpy.props.StringProperty(default="")
 
     def init(self, context):
@@ -132,10 +116,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         options_box.prop(self, "apply_modifiers")
         options_box.prop(self, "reset_transforms")
 
-        # The payload summary is deliberately NOT computed here: draw() runs on
-        # every UI redraw, and scanning every object's layers from it makes the
-        # whole interface stall. It is filled in by the Check button and by the
-        # export itself, and cached in payload_summary.
         payload_box = layout.box()
         payload_box.label(text="Payload")
         if self.payload_summary:
@@ -153,11 +133,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         props.function_name = "do_export"
 
     def check_payload(self):
-        """Scan the export set and cache what will travel with it.
-
-        Run on demand rather than from draw(), because this walks every object's
-        layers and draw() is called on every redraw.
-        """
         objects = self._gather_objects()
         if not objects:
             self.payload_summary = ""
@@ -181,15 +156,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         self.status_is_error = False
 
     def _describe_payload(self, objects):
-        """Summarise the UV and colour layers that will be written.
-
-        FBX carries UV layers and colour attributes, but **not** arbitrary named
-        float attributes: ``stem_id``, ``branch_extent`` and the rest exist only
-        inside Blender. That is why the foliage and pivot painter exports bake
-        their data into UVs and vertex colours first. Running Mesh Export before
-        those bakes produces a file that is missing the data, with nothing in the
-        export itself to say so.
-        """
         uv_layers, color_layers = set(), set()
         for obj in objects:
             mesh = obj.data
@@ -200,7 +166,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         return sorted(uv_layers), sorted(color_layers)
 
     def _gather_objects(self):
-        """Collect the mesh objects to export."""
         if self.export_selection == "SELECTED":
             return [obj for obj in bpy.context.selected_objects if obj.type == "MESH"]
 
@@ -210,7 +175,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         return [obj for obj in collection.objects if obj.type == "MESH"]
 
     def do_export(self):
-        """Run the export."""
         self.status_message = ""
         self.status_is_error = False
 
@@ -223,7 +187,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         export_dir = bpy.path.abspath(self.export_path)
         os.makedirs(export_dir, exist_ok=True)
 
-        # Selection state is UI state the user owns; restore whatever it was.
         previous_selection = list(bpy.context.selected_objects)
         previous_active = bpy.context.view_layer.objects.active
 
@@ -249,47 +212,113 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         finally:
             bpy.ops.object.select_all(action="DESELECT")
             for obj in previous_selection:
-                # An object exported and then removed mid-run leaves a stale
-                # reference; restoring selection must not fail on it.
                 with contextlib.suppress(ReferenceError):
                     obj.select_set(True)
             bpy.context.view_layer.objects.active = previous_active
 
     def _select_only(self, objects):
-        """Make exactly the given objects selected and active."""
         bpy.ops.object.select_all(action="DESELECT")
         for obj in objects:
             obj.select_set(True)
         bpy.context.view_layer.objects.active = objects[0] if objects else None
 
-    def _write_file(self, filepath):
-        """Invoke the format-specific exporter for the current selection."""
+    def _has_wind_morphs(self, objects):
+        """Decide from the objects being written, not the current selection.
+
+        Morph targets are baked from a temporary skeleton and the skeleton is
+        deliberately not exported, but they constrain the writer: triangulation
+        and modifier evaluation both break shape-key vertex correspondence, and
+        bake_space_transform moves vertices the keys were computed against. A
+        batch that read global selection state would decide this per file and
+        land morph-carrying trees on different axes than plain ones.
+        """
+        from ...pivot_painter.wind_morphs import count_wind_morphs
+
+        return any(
+            obj.type == "MESH" and count_wind_morphs(obj) for obj in objects
+        )
+
+    @contextlib.contextmanager
+    def _axis_converted(self, objects, axes):
+        from mathutils import Matrix
+
+        if axes["axis_up"] != "Y" or not self._has_wind_morphs(objects):
+            yield objects
+            return
+
+        rotation = Matrix.Rotation(math.radians(-90.0), 4, "X")
+        copies = []
+
+        try:
+            for obj in objects:
+                copy = obj.copy()
+                copy.data = obj.data.copy()
+                target = (
+                    obj.users_collection[0]
+                    if obj.users_collection
+                    else bpy.context.scene.collection
+                )
+                target.objects.link(copy)
+                copies.append(copy)
+
+                self._rotate_mesh_and_keys(copy.data, rotation)
+
+            self._select_only(copies)
+            yield copies
+
+        finally:
+            for copy in copies:
+                data = copy.data
+                bpy.data.objects.remove(copy, do_unlink=True)
+                if data.users == 0:
+                    bpy.data.meshes.remove(data)
+
+    def _rotate_mesh_and_keys(self, mesh, rotation):
+        import numpy as np
+
+        matrix = np.array(rotation.to_3x3())
+
+        def spin(collection, count):
+            flat = np.empty(count * 3, dtype=np.float32)
+            collection.foreach_get("co", flat)
+            turned = flat.reshape(-1, 3) @ matrix.T
+            collection.foreach_set("co", np.ascontiguousarray(turned, dtype=np.float32).ravel())
+
+        vertex_count = len(mesh.vertices)
+        spin(mesh.vertices, vertex_count)
+
+        if mesh.shape_keys is not None:
+            for key in mesh.shape_keys.key_blocks:
+                spin(key.data, vertex_count)
+
+        mesh.update()
+
+    def _write_file(self, filepath, objects):
         axes = ENGINE_AXES[self.target_engine]
+
+        with self._axis_converted(objects, axes) as writable:
+            converted = writable is not objects
+            self._write_selection(filepath, writable, axes, converted)
+
+    def _write_selection(self, filepath, objects, axes, pre_rotated):
+        morphs = self._has_wind_morphs(objects)
+        if pre_rotated:
+            axes = {"axis_up": "Z", "axis_forward": "-Y"}
 
         if self.export_format == "FBX":
             bpy.ops.export_scene.fbx(
                 filepath=filepath,
                 use_selection=True,
                 apply_unit_scale=True,
-                # Bakes the axis conversion into the mesh data so the exported
-                # object carries an identity rotation, instead of a -90 X that
-                # Unity then has to undo.
-                bake_space_transform=True,
+                bake_space_transform=not morphs,
                 apply_scale_options="FBX_SCALE_ALL",
                 mesh_smooth_type="FACE",
-                use_mesh_modifiers=self.apply_modifiers,
-                # The colour layers carry four independent scalars, not colour.
-                # SRGB would gamma-encode them and silently corrupt every value.
+                object_types={"MESH"},
+                bake_anim=False,
+                use_mesh_modifiers=self.apply_modifiers and not morphs,
                 colors_type="LINEAR",
-                # Some importers keep only the first colour attribute and discard
-                # the rest; with both PivotPainterMask and FoliageShading present
-                # that would drop one of them without an error.
                 prioritize_active_color=True,
-                # Triangulate here rather than letting the engine do it on
-                # import: a different triangulation splits UVs differently at
-                # seams, which moves texture coordinates that were correct.
-                use_triangles=True,
-                # Pivot painter and foliage data ride along as custom properties.
+                use_triangles=not morphs,
                 use_custom_props=True,
                 axis_up=axes["axis_up"],
                 axis_forward=axes["axis_forward"],
@@ -299,10 +328,9 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
                 filepath=filepath,
                 use_selection=True,
                 export_yup=(axes["axis_up"] == "Y"),
-                export_apply=self.apply_modifiers,
-                # All of these default to dropping data. UVs and colours are on
-                # by default; generic attributes are not, and the foliage
-                # streams live there.
+                export_apply=self.apply_modifiers and not morphs,
+                export_morph=True,
+                export_skins=False,
                 export_texcoords=True,
                 export_normals=True,
                 export_all_vertex_colors=True,
@@ -310,7 +338,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
             )
 
     def _export_separate(self, objects, export_dir):
-        """Write one file per object."""
         extension = "fbx" if self.export_format == "FBX" else "glb"
         count = 0
 
@@ -321,7 +348,9 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
 
             try:
                 self._select_only([obj])
-                self._write_file(os.path.join(export_dir, f"{obj.name}.{extension}"))
+                self._write_file(
+                    os.path.join(export_dir, f"{obj.name}.{extension}"), [obj]
+                )
                 count += 1
             finally:
                 obj.location = original_location
@@ -329,16 +358,14 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         return count
 
     def _export_combined(self, objects, export_dir):
-        """Write every object into a single file."""
         extension = "fbx" if self.export_format == "FBX" else "glb"
         name = self.collection_name if self.export_selection == "COLLECTION" else "trees"
 
         self._select_only(objects)
-        self._write_file(os.path.join(export_dir, f"{name}.{extension}"))
+        self._write_file(os.path.join(export_dir, f"{name}.{extension}"), objects)
         return 1
 
     def _export_blend(self, export_dir):
-        """Save a copy of the current blend file."""
         name = self.collection_name if self.export_selection == "COLLECTION" else "trees"
         bpy.ops.wm.save_as_mainfile(
             filepath=os.path.join(export_dir, f"{name}.blend"),

@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="420" viewBox="0 0 420 420">
+  <rect width="420" height="420" fill="#ffffff"/>
+  <line x1="0" y1="400" x2="420" y2="400" stroke="#cccccc" stroke-width="1"/>
+  <line x1="210.0" y1="0" x2="210.0" y2="420" stroke="#eeeeee" stroke-width="1"/>
+  <polyline points="210.0000,400.0000 210.0000,365.0000 210.0000,330.0000 210.0000,295.0000" fill="none" stroke="#bbbbbb" stroke-width="3.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <circle cx="210.0000" cy="400.0000" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="210.0000" cy="365.0000" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="210.0000" cy="330.0000" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="210.0000" cy="295.0000" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <polyline points="210.0000,330.0000 242.8892,318.0293 275.7785,306.0586" fill="none" stroke="#bbbbbb" stroke-width="3.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <circle cx="210.0000" cy="330.0000" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="242.8892" cy="318.0293" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="275.7785" cy="306.0586" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <polyline points="210.0000,330.0000 177.1108,318.0293 144.2215,306.0586" fill="none" stroke="#bbbbbb" stroke-width="3.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <circle cx="210.0000" cy="330.0000" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="177.1108" cy="318.0293" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="144.2215" cy="306.0586" r="4.500" fill="#bbbbbb" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <polyline points="210.0000,400.0000 210.0000,365.0000 211.4656,330.0307 221.9321,296.6323" fill="none" stroke="#08306b" stroke-width="4.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <circle cx="210.0000" cy="400.0000" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="210.0000" cy="365.0000" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="211.4656" cy="330.0307" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="221.9321" cy="296.6323" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <polyline points="211.4656,330.0307 246.2127,334.2306 280.3678,326.5866" fill="none" stroke="#08306b" stroke-width="4.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <circle cx="211.4656" cy="330.0307" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="246.2127" cy="334.2306" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="280.3678" cy="326.5866" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <polyline points="211.4656,330.0307 190.5325,301.9807 207.1211,271.1616" fill="none" stroke="#08306b" stroke-width="4.000" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <circle cx="211.4656" cy="330.0307" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="190.5325" cy="301.9807" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <circle cx="207.1211" cy="271.1616" r="4.500" fill="#08306b" stroke="#ffffff" stroke-width="1" opacity="1.000"/>
+  <text x="8" y="16" font-family="monospace" font-size="11" fill="#333333">after: full wind blowing right (+X)</text>
+  <text x="8" y="32" font-family="monospace" font-size="10" fill="#777777">grey = rest, blue = full wind</text>
+  <text x="8" y="46" font-family="monospace" font-size="10" fill="#08306b">the upwind (left) branch folds much further</text>
+</svg>

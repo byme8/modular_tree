@@ -1,0 +1,11 @@
+# uniform stiffness sweep, 4-bone chain, wind +X at full strength
+# columns: stiffness | tip_x
+1.000000 0.000000
+0.800000 0.313643
+0.600000 1.223901
+0.400000 2.469756
+0.200000 3.323979
+0.000000 3.707107
+
+# violations
+  none

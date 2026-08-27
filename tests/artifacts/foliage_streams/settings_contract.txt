@@ -1,0 +1,19 @@
+# authored foliage settings and the consumers that accept them
+# consumers: build_rig, compute_all_streams
+
+# columns: setting | default | accepted_by
+branch_stiffness 1.0 build_rig, compute_all_streams
+build_bone_rig False NONE
+junction_falloff 0.6 build_rig, compute_all_streams
+normal_blend 0.0 compute_all_streams
+occlusion_base 0.25 compute_all_streams
+segments_per_chain 4 build_rig
+translucency_tip 0.0 compute_all_streams
+trunk_base_stiffness 1.0 build_rig, compute_all_streams
+trunk_tip_stiffness 1.0 build_rig, compute_all_streams
+
+# rig-only keys the stream filter removes
+  build_bone_rig, segments_per_chain
+
+# violations
+  none

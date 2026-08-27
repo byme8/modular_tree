@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from bpy.types import NodeSocket, NodeTree
 
+SEED_PROPERTY = "seed"
+
 
 class MtreeNode:
     @classmethod
@@ -117,7 +119,10 @@ class MtreeFunctionNode(MtreeNode):
         for parameter in self.exposed_parameters + self.advanced_parameters:
             layout.prop(self, parameter)
 
-    def construct_function(self):
+    def construct_function(self, seed_offset: int = 0):
+        """seed_offset is applied in flight, never written to the sockets: a
+        mutated graph would be observed by the change poller mid-build.
+        """
         if self.tree_function is None:
             raise ValueError(f"tree_function not defined for {self.__class__.__name__}")
         function_instance = self.tree_function()
@@ -130,13 +135,14 @@ class MtreeFunctionNode(MtreeNode):
                     property = input_socket.get_property()
                     setattr(function_instance, input_socket.property_name, property)
                 else:
-                    setattr(
-                        function_instance, input_socket.property_name, input_socket.property_value
-                    )
+                    value = input_socket.property_value
+                    if seed_offset and input_socket.property_name == SEED_PROPERTY:
+                        value = value + seed_offset
+                    setattr(function_instance, input_socket.property_name, value)
 
         for child in self.get_child_nodes():
             if isinstance(child, MtreeFunctionNode):
-                child_function = child.construct_function()
+                child_function = child.construct_function(seed_offset)
                 function_instance.add_child(child_function)
 
         return function_instance

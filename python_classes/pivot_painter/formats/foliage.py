@@ -18,7 +18,7 @@ import numpy as np
 if TYPE_CHECKING:
     import bpy
 
-from ..exporter import ExportResult
+from .. import ExportResult
 from ..foliage_streams import compute_all_streams
 
 # Attribute names produced by ManifoldMesher that the streams are derived from.

@@ -1,0 +1,16 @@
+# branch response versus angle to the wind, full strength +X
+# rigid trunk; every branch has identical stiffness [0.3, 0.1]
+# antiparallel easing band 0.4
+
+# columns: tilt_deg | leverage=|dir x wind| | max_drift
+0.000000 1.000000 0.695913
+25.000000 0.906308 0.549570
+45.000000 0.707107 0.691399
+70.000000 0.342020 0.646182
+90.000000 0.000000 0.000000
+110.000000 0.342020 0.646182
+135.000000 0.707107 0.691399
+180.000000 1.000000 0.695913
+
+# violations
+  none

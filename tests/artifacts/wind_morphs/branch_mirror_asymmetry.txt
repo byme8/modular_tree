@@ -1,0 +1,13 @@
+# mirrored branches at +/-70 deg under the same wind
+# both are pushed downwind, but not by equal amounts:
+# leverage and parent composition differ once they tilt
+
+downwind_branch_drift 0.462895
+upwind_branch_drift 0.458531
+
+# columns: branch | rest_tip_x | posed_tip_x | travel
+downwind 0.939693 1.034650 0.094957
+  upwind -0.939693 -0.556215 0.383477
+
+# violations
+  none

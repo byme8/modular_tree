@@ -1,0 +1,14 @@
+# morph set: 4 directions at full strength
+# 4 bones, spacing 90 deg
+
+uniform_magnitude 0.628705
+closest_pair_distance 0.613954
+
+# columns: morph | wind_deg | max_delta | tip_azimuth_deg
+    0 0.000000 0.628705 0.000000
+    1 90.000000 0.628705 90.000000
+    2 180.000000 0.628705 180.000000
+    3 270.000000 0.628705 270.000000
+
+# violations
+  none

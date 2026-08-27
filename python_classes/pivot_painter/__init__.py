@@ -1,21 +1,25 @@
-from .exporter import ExportFormat, ExportResult, PivotPainterExporter
+"""Foliage vertex streams and bone rig.
 
-"""Pivot Painter 2.0 export module for game engine integration.
+Mtree does not simulate wind. It bakes the per-vertex data a real-time foliage
+shader needs in order to do wind itself, and optionally a bone rig that replaces
+that vertex wind entirely.
 
-This module provides export functionality for Pivot Painter 2.0 data,
-supporting Unreal Engine 4/5 and Unity.
-
-For UE5, the exporter generates textures compatible with Epic's built-in
-PivotPainter2FoliageShader material function. See UE5_MATERIAL_SETUP.md
-for detailed setup instructions.
-
-Texture format (Epic's Pivot Painter 2.0 standard):
-    - PivotPos_Index.exr: RGB = pivot position, A = hierarchy depth
-    - XVector_Extent.exr: RGB = branch direction, A = branch length
-
-When leaf data is present (procedural leaf generator):
-    - LeafAttachment.exr: RGB = leaf attachment world position, A = 1.0
-    - LeafFacing.exr: RGB = leaf facing direction, A = 1.0
+``ExportResult`` lives here rather than in either exporter because both return
+it and neither owns it.
 """
 
-__all__ = ["PivotPainterExporter", "ExportFormat", "ExportResult"]
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass
+class ExportResult:
+    """Result of an export operation."""
+
+    success: bool
+    message: str
+    files_created: list[str] | None = None
+
+
+__all__ = ["ExportResult"]

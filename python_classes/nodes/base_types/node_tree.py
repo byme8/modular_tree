@@ -7,11 +7,11 @@ class MtreeNodeTree(bpy.types.NodeTree):
     bl_icon = "ONIONSKIN_ON"
 
     def update(self):
-        """Called when links or topology change."""
-        # Import here to avoid circular imports
-        from ..debounce import schedule_build
+        """Called when links or topology change.
 
-        for node in self.nodes:
-            if node.bl_idname == "mt_MesherNode":
-                schedule_build(node)
-                break
+        Deliberately does not trigger a rebuild. Building removes and recreates
+        objects and armatures, and doing that from a timer while Blender is
+        still settling a link change crashes it outright. Parameter edits still
+        auto-rebuild through the socket callbacks; topology changes wait for
+        Generate.
+        """

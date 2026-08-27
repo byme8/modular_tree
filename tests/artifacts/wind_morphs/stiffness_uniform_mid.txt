@@ -1,0 +1,14 @@
+# stiffness response: uniform_mid
+# one 4-bone chain along +Z, wind along +X at full strength
+
+tip_travel_downwind 1.840451
+out_of_plane_y 0.000000
+
+# columns: bone | stiffness | sway=1-s | cumulative_turn_deg
+   0 0.500000 0.500000 11.250000
+   1 0.500000 0.500000 22.500000
+   2 0.500000 0.500000 33.750000
+   3 0.500000 0.500000 45.000000
+
+# violations
+  none

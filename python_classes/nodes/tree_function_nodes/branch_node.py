@@ -7,7 +7,7 @@ import bpy
 from ...m_tree_wrapper import lazy_m_tree
 from ...viewport.shape_formulas import BLENDER_SHAPE_MAP
 from ...viewport.shape_formulas import CrownShape as PyCrownShape
-from ..base_types.node import MtreeFunctionNode
+from ..base_types.node import SEED_PROPERTY, MtreeFunctionNode
 from ..debounce import schedule_build
 
 # Parameter groupings for organized UI
@@ -114,14 +114,12 @@ class BranchNode(bpy.types.Node, MtreeFunctionNode):
         "split_angle": ("split", "angle"),
     }
 
-    def construct_function(self):
+    def construct_function(self, seed_offset: int = 0):
         func = self.tree_function()
 
-        # Handle exposed_parameters (from base class pattern)
         for parameter in self.exposed_parameters:
             setattr(func, parameter, getattr(self, parameter))
 
-        # Handle input sockets with nested property mapping
         for input_socket in self.inputs:
             if not input_socket.is_property:
                 continue
@@ -131,8 +129,9 @@ class BranchNode(bpy.types.Node, MtreeFunctionNode):
                 value = input_socket.get_property()
             else:
                 value = input_socket.property_value
+                if seed_offset and prop_name == SEED_PROPERTY:
+                    value = value + seed_offset
 
-            # Check if this is a nested property
             if prop_name in self.NESTED_PROPERTY_MAP:
                 struct_name, field_name = self.NESTED_PROPERTY_MAP[prop_name]
                 struct = getattr(func, struct_name)
@@ -146,12 +145,11 @@ class BranchNode(bpy.types.Node, MtreeFunctionNode):
         func.crown.shape = lazy_m_tree.CrownShape(int(py_shape))
         func.crown.angle_variation = self.angle_variation
 
-        # Handle child nodes
         for child in self.get_child_nodes():
             from ..base_types.node import MtreeFunctionNode
 
             if isinstance(child, MtreeFunctionNode):
-                child_function = child.construct_function()
+                child_function = child.construct_function(seed_offset)
                 func.add_child(child_function)
 
         return func

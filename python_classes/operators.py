@@ -10,7 +10,13 @@ from bpy.utils import register_class, unregister_class
 
 from .m_tree_wrapper import lazy_m_tree as m_tree
 from .mesh_utils import create_mesh_from_cpp
-from .pivot_painter import ExportFormat, PivotPainterExporter
+from .pivot_painter.formats.foliage import FoliageExporter
+from .pivot_painter.formats.foliage_rig import FoliageRigExporter
+from .pivot_painter.tree_asset import (
+    armature_name_for,
+    owning_collection,
+    strip_rig,
+)
 from .presets import (
     TREE_PRESETS,
     apply_preset,
@@ -233,30 +239,14 @@ class QuickGenerateTree(bpy.types.Operator):
         layout.prop(self, "add_leaves")
 
 
-class ExportPivotPainter(bpy.types.Operator):
-    """Export Pivot Painter 2.0 data for game engines."""
+class ExportFoliage(bpy.types.Operator):
+    """Bake foliage wind and shading streams, and optionally a bone rig."""
 
-    bl_idname = "mtree.export_pivot_painter"
-    bl_label = "Export Pivot Painter"
+    bl_idname = "mtree.export_foliage"
+    bl_label = "Bake Foliage"
     bl_options = {"REGISTER", "UNDO"}
 
     object_name: bpy.props.StringProperty(name="Object")
-    export_format: bpy.props.EnumProperty(
-        name="Format",
-        items=[
-            ("UE5", "Unreal Engine 5", "Export for UE5 with Nanite support"),
-            ("UE4", "Unreal Engine 4", "Export for UE4 Pivot Painter 2.0"),
-            ("UNITY", "Unity", "Export vertex colors for Unity"),
-            ("FOLIAGE", "Foliage Streams", "Write wind and shading vertex streams onto the mesh"),
-        ],
-        default="UE5",
-    )
-    texture_size: bpy.props.IntProperty(name="Texture Size", default=1024, min=64, max=4096)
-    export_path: bpy.props.StringProperty(
-        name="Export Path",
-        subtype="DIR_PATH",
-        default="//pivot_painter/",
-    )
     occlusion_base: bpy.props.FloatProperty(
         name="Occlusion Base",
         description="Ambient occlusion at the branch base; the tip is always 1",
@@ -345,12 +335,8 @@ class ExportPivotPainter(bpy.types.Operator):
             self.report({"ERROR"}, "Object data is not a mesh")
             return {"CANCELLED"}
 
-        exporter = PivotPainterExporter(
+        result = FoliageExporter(
             mesh=mesh_data,
-            mesh_object=obj,
-            export_format=ExportFormat[self.export_format],
-            texture_size=self.texture_size,
-            export_path=self.export_path,
             occlusion_base=self.occlusion_base,
             translucency_tip=self.translucency_tip,
             normal_blend=self.normal_blend,
@@ -358,19 +344,38 @@ class ExportPivotPainter(bpy.types.Operator):
             trunk_tip_stiffness=self.trunk_tip_stiffness,
             branch_stiffness=self.branch_stiffness,
             junction_falloff=self.junction_falloff,
-            build_bone_rig=self.build_bone_rig,
-            segments_per_chain=self.segments_per_chain,
-            create_armature=self.create_armature,
-        )
+        ).export()
 
-        result = exporter.export(obj.name)
-
-        if result.success:
-            self.report({"INFO"}, result.message)
-            return {"FINISHED"}
-        else:
+        if not result.success:
             self.report({"ERROR"}, result.message)
             return {"CANCELLED"}
+
+        message = result.message
+
+        if self.build_bone_rig:
+            strip_rig(obj)
+
+            rig_result = FoliageRigExporter(
+                mesh=mesh_data,
+                mesh_object=obj,
+                segments_per_chain=self.segments_per_chain,
+                trunk_base_stiffness=self.trunk_base_stiffness,
+                trunk_tip_stiffness=self.trunk_tip_stiffness,
+                branch_stiffness=self.branch_stiffness,
+                junction_falloff=self.junction_falloff,
+                create_armature=self.create_armature,
+                armature_name=armature_name_for(obj),
+                collection=owning_collection(obj),
+            ).export()
+
+            if not rig_result.success:
+                self.report({"ERROR"}, f"Streams written, rig failed: {rig_result.message}")
+                return {"CANCELLED"}
+
+            message = f"{message} {rig_result.message}"
+
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
 
     def invoke(self, context, event):
         if context.active_object and context.active_object.type == "MESH":
@@ -380,24 +385,19 @@ class ExportPivotPainter(bpy.types.Operator):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "object_name")
-        layout.prop(self, "export_format")
-        if self.export_format == "FOLIAGE":
-            layout.prop(self, "trunk_base_stiffness")
-            layout.prop(self, "trunk_tip_stiffness")
-            layout.prop(self, "branch_stiffness")
-            layout.prop(self, "junction_falloff")
-            layout.prop(self, "occlusion_base")
-            layout.prop(self, "translucency_tip")
-            layout.prop(self, "normal_blend")
+        layout.prop(self, "trunk_base_stiffness")
+        layout.prop(self, "trunk_tip_stiffness")
+        layout.prop(self, "branch_stiffness")
+        layout.prop(self, "junction_falloff")
+        layout.prop(self, "occlusion_base")
+        layout.prop(self, "translucency_tip")
+        layout.prop(self, "normal_blend")
 
-            rig_box = layout.box()
-            rig_box.prop(self, "build_bone_rig")
-            if self.build_bone_rig:
-                rig_box.prop(self, "segments_per_chain")
-                rig_box.prop(self, "create_armature")
-        elif self.export_format != "UNITY":
-            layout.prop(self, "texture_size")
-            layout.prop(self, "export_path")
+        rig_box = layout.box()
+        rig_box.prop(self, "build_bone_rig")
+        if self.build_bone_rig:
+            rig_box.prop(self, "segments_per_chain")
+            rig_box.prop(self, "create_armature")
 
 
 class GenerateLeaf(bpy.types.Operator):
@@ -516,7 +516,7 @@ _classes = [
     ExecuteNodeFunction,
     AddLeavesModifier,
     QuickGenerateTree,
-    ExportPivotPainter,
+    ExportFoliage,
     GenerateLeaf,
     ApplyLeafPreset,
     ApplyBranchNodePreset,

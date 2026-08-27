@@ -1,0 +1,12 @@
+# amplitude law: stiffness 0.75, 1 segments
+# per-bone turn should equal 180 * (1-stiffness)^2 / segments
+# the chain saturates at 90 deg: leverage falls as a bone nears the
+# wind axis, so turns do not accumulate linearly toward the tip
+
+sway 0.250000
+expected_per_bone_deg 11.250000
+measured_root_deg 11.250000
+measured_tip_deg 11.250000
+
+# violations
+  none

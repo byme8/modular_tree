@@ -1,0 +1,18 @@
+# wind pose: continuity in angle and morph-target convergence
+# tree: 16 bones, 52 vertices, max bend 45 deg
+
+rest_drift_at_zero_strength 0.000000
+peak_displacement 1.024477
+
+# largest vertex move between adjacent 0.5 deg samples
+worst_jump 0.010283 at_degrees 4.500000
+
+# interpolating N baked directions against the true pose between them
+# columns: directions | max_error | ratio_to_previous
+  4 0.355481 -
+  8 0.098089 0.275933
+ 16 0.025365 0.258593
+ 32 0.006383 0.251647
+
+# violations
+  none

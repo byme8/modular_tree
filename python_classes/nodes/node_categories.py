@@ -59,8 +59,8 @@ node_categories = [
         "Export",
         "Export",
         items=[
-            NodeItem("mt_PivotPainterExportNode"),
             NodeItem("mt_FoliageWindNode"),
+            NodeItem("mt_FoliageExportNode"),
             NodeItem("mt_MeshExportNode"),
         ],
     ),

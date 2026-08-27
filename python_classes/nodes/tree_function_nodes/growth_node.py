@@ -70,25 +70,26 @@ class GrowthNode(bpy.types.Node, MtreeFunctionNode):
     def tree_function(self):
         return lazy_m_tree.GrowthFunction
 
-    def construct_function(self):
-        """Override to validate threshold constraints before constructing the C++ function."""
-        # Get current values from sockets
+    def construct_function(self, seed_offset: int = 0):
+        """Flowering needs flower_threshold above cut_threshold, so an invalid
+        pair is corrected on the built function rather than written back to the
+        socket: a write here would schedule a rebuild from inside a build, and
+        would silently overwrite what the user authored.
+        """
+        function_instance = super().construct_function(seed_offset)
+
         cut_socket = self._get_socket_by_property("cut_threshold")
         flower_socket = self._get_socket_by_property("flower_threshold")
         flowering_socket = self._get_socket_by_property("enable_flowering")
 
-        if cut_socket and flower_socket and flowering_socket:
-            cut_val = cut_socket.property_value
-            flower_val = flower_socket.property_value
-            flowering_enabled = flowering_socket.property_value
+        if not (cut_socket and flower_socket and flowering_socket):
+            return function_instance
 
-            # Validate: flower_threshold must be > cut_threshold for flowering to work
-            if flowering_enabled and flower_val <= cut_val:
-                # Adjust flower_threshold to be above cut_threshold
-                flower_socket.property_value = cut_val + self.THRESHOLD_GAP
+        cut_value = cut_socket.property_value
+        if flowering_socket.property_value and flower_socket.property_value <= cut_value:
+            function_instance.flower_threshold = cut_value + self.THRESHOLD_GAP
 
-        # Call parent implementation
-        return super().construct_function()
+        return function_instance
 
     def init(self, context):
         self.add_input("mt_TreeSocket", "Tree", is_property=False)

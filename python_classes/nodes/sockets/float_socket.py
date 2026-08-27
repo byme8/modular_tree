@@ -12,10 +12,10 @@ class MtreeFloatSocket(bpy.types.NodeSocket, MtreeSocket):
     min_value: bpy.props.FloatProperty(default=-float("inf"))
     max_value: bpy.props.FloatProperty(default=float("inf"))
 
-    def update_value(self, context):
-        self["property_value"] = max(self.min_value, min(self.max_value, self.property_value))
-
-    property_value: bpy.props.FloatProperty(default=0, update=update_value)
+    property_value: bpy.props.FloatProperty(
+        default=0,
+        update=lambda self, context: self.on_value_changed(),
+    )
 
     def draw(self, context, layout, node, text):
         if self.is_output or self.is_linked:

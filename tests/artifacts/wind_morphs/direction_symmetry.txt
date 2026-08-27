@@ -1,0 +1,10 @@
+# wind direction symmetry on a 4-bone chain at full strength
+
+# columns: angle_deg | wrap_360_error | mirror_180_xy_error | mirror_180_z_error
+0.000000 0.000000 0.000000 0.000000
+30.000000 0.000000 0.000000 0.000000
+90.000000 0.000000 0.000000 0.000000
+210.000000 0.000000 0.000000 0.000000
+
+# violations
+  none

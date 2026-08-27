@@ -1,49 +1,36 @@
-"""Viewport debug view for foliage vertex streams.
-
-The stream values are invisible in a normal viewport: a wrong stiffness or a
-phase that drifts within one branch still produces perfectly plausible geometry,
-and the defect only appears once wind runs in the consuming engine. This draws
-the mesh shaded by one stream at a time so the values can be checked before
-export.
-
-Channel numbering matches the consuming shader's own debug view, so a channel
-checked here and a channel checked in-engine mean the same thing.
-"""
 
 from __future__ import annotations
 
+import inspect
+
 import numpy as np
 
-# The colour-mapping logic below is pure and is tested without Blender, so the
-# Blender modules are imported lazily inside the functions that draw.
 try:
     import bpy
-except ImportError:  # running outside Blender, under test
+except ImportError:
     bpy = None
 
-try:  # package import (addon runtime)
+try:
     from ..pivot_painter.foliage_streams import compute_all_streams
-except ImportError:  # flat import (test harness puts pivot_painter/ on sys.path)
-    from foliage_streams import compute_all_streams  # type: ignore[no-redef]
+except ImportError:
+    from foliage_streams import compute_all_streams
 
 _draw_handler = None
 
-# Cached GPU batch for the debug overlay. The draw handler runs on every viewport
-# redraw, so the batch is rebuilt only when _cached_key changes.
 _cached_key = None
 _cached_batch = None
 _cached_shader = None
 
+DEPTH_BIAS = 1e-4
+
 
 def invalidate_debug_cache():
-    """Drop the cached overlay batch, forcing a rebuild on the next redraw."""
     global _cached_key, _cached_batch, _cached_shader
     _cached_key = None
     _cached_batch = None
     _cached_shader = None
 
 
-# Channel ids mirror the consuming shader's debug view numbering.
 DEBUG_CHANNELS = [
     ("NONE", "Off", "Disable the debug view", 0),
     ("STIFFNESS", "1 Stiffness", "Wind authority: 1 rigid, 0 free tip", 1),
@@ -61,21 +48,8 @@ SOURCE_VECTOR_ATTRIBUTES = ["pivot_position", "direction"]
 
 
 def value_to_viridis(values: np.ndarray) -> np.ndarray:
-    """Map scalars in [0, 1] to a perceptually ordered colour ramp.
-
-    A ramp is used rather than greyscale because a flat grey patch and a shallow
-    grey gradient are hard to tell apart by eye, and telling them apart is
-    exactly what the phase check requires.
-
-    Args:
-        values: Array of scalars, expected in [0, 1].
-
-    Returns:
-        Nx4 RGBA array.
-    """
     v = np.clip(np.asarray(values, dtype=np.float64).ravel(), 0.0, 1.0)
 
-    # Four-stop approximation of viridis: dark blue, teal, green, yellow.
     stops = np.array(
         [
             [0.267, 0.005, 0.329],
@@ -93,22 +67,8 @@ def value_to_viridis(values: np.ndarray) -> np.ndarray:
 
 
 def stem_id_to_color(stem_ids: np.ndarray) -> np.ndarray:
-    """Map branch chain ids to visually distinct colours.
-
-    Structure view answers "is this one blade or several?", so neighbouring ids
-    must not land on neighbouring colours. The golden-ratio hash that generates
-    phase is reused as the hue, which also makes this view a direct visual check
-    that phase is constant per chain.
-
-    Args:
-        stem_ids: Per-vertex branch chain id.
-
-    Returns:
-        Nx4 RGBA array.
-    """
     hue = np.mod(np.asarray(stem_ids, dtype=np.float64).ravel() * 0.61803398875, 1.0)
 
-    # Cheap HSV->RGB at full saturation and value.
     h6 = hue * 6.0
     sector = np.floor(h6).astype(int) % 6
     f = h6 - np.floor(h6)
@@ -134,20 +94,6 @@ def stem_id_to_color(stem_ids: np.ndarray) -> np.ndarray:
 
 
 def compute_channel_colors(streams: dict, stem_ids: np.ndarray, channel: str) -> np.ndarray | None:
-    """Compute per-vertex debug colours for one channel.
-
-    Blade height is normalised by its own maximum for display only — it is a
-    metre value, so showing it raw would clip everything above one metre to the
-    same colour.
-
-    Args:
-        streams: Output of ``compute_all_streams``.
-        stem_ids: Per-vertex branch chain id.
-        channel: Channel identifier from ``DEBUG_CHANNELS``.
-
-    Returns:
-        Nx4 RGBA array, or None if the channel is unknown or disabled.
-    """
     colors = streams["colors"]
 
     if channel == "STIFFNESS":
@@ -173,7 +119,6 @@ def compute_channel_colors(streams: dict, stem_ids: np.ndarray, channel: str) ->
 
 
 def _find_node_tree_for_object(obj):
-    """Find the MTree node tree whose mesher produced this object."""
     for node_tree in bpy.data.node_groups:
         if node_tree.bl_idname != "mt_MtreeNodeTree":
             continue
@@ -184,14 +129,6 @@ def _find_node_tree_for_object(obj):
 
 
 def read_mesh_streams(mesh, settings: dict | None = None) -> tuple[dict, np.ndarray] | None:
-    """Compute foliage streams from a mesh's mesher attributes.
-
-    The stiffness and shading settings must match the ones the export will use,
-    or the preview shows values that are never written.
-
-    Returns None when the mesh lacks the attributes, so the overlay simply does
-    not draw rather than raising inside a draw handler.
-    """
     required = SOURCE_FLOAT_ATTRIBUTES + SOURCE_VECTOR_ATTRIBUTES
     if any(name not in mesh.attributes for name in required):
         return None
@@ -222,13 +159,55 @@ def read_mesh_streams(mesh, settings: dict | None = None) -> tuple[dict, np.ndar
         pivot_positions=values["pivot_position"],
         directions=values["direction"],
         hierarchy_depths=values["hierarchy_depth"],
-        **(settings or {}),
+        **_stream_settings(settings),
     )
     return streams, values["stem_id"]
 
 
+def _stream_settings(settings: dict | None) -> dict:
+    if not settings:
+        return {}
+
+    accepted = set(inspect.signature(compute_all_streams).parameters)
+    return {key: value for key, value in settings.items() if key in accepted}
+
+
+def _draw_batch(gpu, shader, batch):
+    shader.bind()
+
+    gpu.state.depth_test_set("LESS_EQUAL")
+    gpu.state.depth_mask_set(True)
+    gpu.state.face_culling_set("BACK")
+
+    with gpu.matrix.push_pop_projection():
+        projection = gpu.matrix.get_projection_matrix().copy()
+        projection[2][3] -= DEPTH_BIAS
+        gpu.matrix.load_projection_matrix(projection)
+        batch.draw(shader)
+
+    gpu.state.face_culling_set("NONE")
+    gpu.state.depth_mask_set(False)
+    gpu.state.depth_test_set("NONE")
+
+
+def _debug_target_object():
+    active = bpy.context.active_object
+    if active is not None and active.type == "MESH":
+        return active
+
+    for group in bpy.data.node_groups:
+        if group.bl_idname != "mt_MtreeNodeTree":
+            continue
+        for node in group.nodes:
+            if node.bl_idname != "mt_MesherNode":
+                continue
+            candidate = bpy.context.scene.objects.get(node.tree_object, None)
+            if candidate is not None and candidate.type == "MESH":
+                return candidate
+    return None
+
+
 def draw_foliage_debug():
-    """Draw the active object's mesh shaded by the selected stream."""
     import gpu
     from gpu_extras.batch import batch_for_shader
 
@@ -237,12 +216,10 @@ def draw_foliage_debug():
     if channel == "NONE":
         return
 
-    obj = bpy.context.active_object
-    if obj is None or obj.type != "MESH":
+    obj = _debug_target_object()
+    if obj is None:
         return
 
-    # Preview with the same settings the export will use, so what is shown is
-    # what gets written.
     try:
         from ..nodes.export_nodes.foliage_wind_node import find_foliage_wind_settings
 
@@ -250,10 +227,6 @@ def draw_foliage_debug():
     except ImportError:
         settings = None
 
-    # This handler runs on EVERY viewport redraw — every mouse move, every
-    # navigation frame. Recomputing the streams and rebuilding the GPU batch each
-    # time stalls the whole interface on a tree of any size, so the result is
-    # cached and only rebuilt when something that affects it actually changes.
     cache_key = (
         obj.name,
         channel,
@@ -263,12 +236,7 @@ def draw_foliage_debug():
 
     global _cached_key, _cached_batch, _cached_shader
     if cache_key == _cached_key and _cached_batch is not None:
-        gpu.state.depth_test_set("LESS_EQUAL")
-        gpu.state.depth_mask_set(True)
-        _cached_shader.bind()
-        _cached_batch.draw(_cached_shader)
-        gpu.state.depth_mask_set(False)
-        gpu.state.depth_test_set("NONE")
+        _draw_batch(gpu, _cached_shader, _cached_batch)
         return
 
     result = read_mesh_streams(obj.data, settings)
@@ -293,7 +261,6 @@ def draw_foliage_debug():
     mesh.loop_triangles.foreach_get("vertices", tri_verts)
     indices = tri_verts.reshape(-1, 3)
 
-    # Draw in world space so the overlay tracks the object transform.
     matrix = np.array(obj.matrix_world.transposed())
     homogeneous = np.column_stack([coords, np.ones(len(coords))])
     world_coords = (homogeneous @ matrix)[:, :3]
@@ -310,16 +277,10 @@ def draw_foliage_debug():
     _cached_batch = batch
     _cached_shader = shader
 
-    gpu.state.depth_test_set("LESS_EQUAL")
-    gpu.state.depth_mask_set(True)
-    shader.bind()
-    batch.draw(shader)
-    gpu.state.depth_mask_set(False)
-    gpu.state.depth_test_set("NONE")
+    _draw_batch(gpu, shader, batch)
 
 
 def register():
-    """Register the scene property and the draw handler."""
     global _draw_handler
 
     bpy.types.Scene.mtree_foliage_debug_channel = bpy.props.EnumProperty(
@@ -336,7 +297,6 @@ def register():
 
 
 def unregister():
-    """Unregister the draw handler and the scene property."""
     global _draw_handler
     if _draw_handler is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handler, "WINDOW")

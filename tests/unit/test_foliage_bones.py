@@ -1,24 +1,15 @@
-"""Tests for foliage bone rig construction.
-
-A rig fails the same way the vertex streams do: wrong values produce perfectly
-plausible geometry, and the defect only appears once wind runs in the consuming
-engine. Worse, the two worst failures — a parent index pointing forward, a bone
-index out of range — are read as raw buffer offsets by the shader, so they
-sample another branch's pose rather than erroring.
-
-Each test therefore writes a deterministic artifact to
-``tests/artifacts/foliage_bones/`` for inspection rather than relying on a
-pass/fail tick alone.
-"""
 
 from pathlib import Path
 
 import numpy as np
 import pytest
 from foliage_bones import (
+    ANTIPARALLEL_BAND,
     BLEND_BAND,
     DEFAULT_SEGMENTS_PER_CHAIN,
     build_rig,
+    deform_vertices,
+    pose_rig,
     measure_rest_pose_error,
     pack_bone_uv,
     resolve_chain_parents,
@@ -32,7 +23,6 @@ PRECISION = 6
 
 
 def _fmt(value: float) -> str:
-    """Format a float at fixed precision, normalising negative zero."""
     formatted = f"{value:.{PRECISION}f}"
     if formatted.startswith("-0.0") and float(formatted) == 0:
         return "0." + "0" * PRECISION
@@ -40,25 +30,12 @@ def _fmt(value: float) -> str:
 
 
 def write_artifact(name: str, lines: list[str]) -> None:
-    """Write a deterministic snapshot artifact."""
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     (ARTIFACT_DIR / name).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def make_synthetic_tree():
-    """Build a known four-chain tree without the native mesher.
-
-    Chain 0 is a vertical trunk. Chains 1 and 2 are side branches rooted partway
-    up it, running along +X and +Y. Chain 3 is a twig rooted on chain 1, which is
-    what makes parent recovery non-trivial: a depth-2 chain must attach to the
-    correct depth-1 branch rather than to the trunk or to its sibling.
-
-    Deliberately mirrors the fixture in ``test_foliage_streams`` so the two
-    modules are exercised against the same topology, with the extra depth-2
-    chain the rig needs and the streams do not.
-    """
     branches = [
-        # (stem_id, depth, base, direction, extent, radius, n_sections)
         (0, 0, np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 4.0, 0.5, 9),
         (1, 1, np.array([0.0, 0.0, 2.0]), np.array([1.0, 0.0, 0.0]), 2.0, 0.2, 7),
         (2, 1, np.array([0.0, 0.0, 3.0]), np.array([0.0, 1.0, 0.0]), 1.0, 0.1, 5),
@@ -94,19 +71,12 @@ def make_synthetic_tree():
 
 
 class TestSegmentationSweep:
-    """T1: sweep segment count and blend band over a single straight chain.
-
-    Covers M6 (a chain must be segmented to bend at all) and M7 (the blend at a
-    segment boundary must be continuous) across the parameter space rather than
-    pinning one configuration.
-    """
 
     def test_segmentation_and_blending_across_parameters(self):
         extent = 4.0
         base = np.array([0.0, 0.0, 0.0])
         direction = np.array([0.0, 0.0, 1.0])
 
-        # Dense sampling along the chain so segment boundaries are crossed.
         samples = 41
         t_values = np.linspace(0.0, 1.0, samples)
         positions = np.array([base + direction * extent * t for t in t_values])
@@ -132,34 +102,22 @@ class TestSegmentationSweep:
                     blend_band=band,
                 )
 
-                # M6: the chain is split into as many bones as requested, so it
-                # can bend rather than move rigidly.
                 assert rig.bone_count == segments
 
-                # Bones run root to tip with each segment parented to the one
-                # before it, so a forward sweep is valid.
                 assert not validate_rig(rig)
 
                 distinct = len(set(rig.bone_indices_a.tolist()))
                 error = measure_rest_pose_error(rig, positions)
 
-                # M5: every vertex binds to a bone whose rest segment spans it.
-                # These vertices sit exactly on the chain axis, so the distance
-                # is zero up to floating point.
                 assert error["max_distance"] == pytest.approx(0.0, abs=1e-9)
 
-                # M4: weights stay in range whatever the band.
                 assert np.all(rig.weights_a >= 0.0)
                 assert np.all(rig.weights_a <= 1.0)
 
-                # M7: with no band nothing blends; with a band, vertices near a
-                # boundary do. A single-bone chain never blends regardless.
                 if band == 0.0 or segments == 1:
                     assert np.all(rig.weights_a == 1.0)
                 else:
                     assert np.any(rig.weights_a < 1.0)
-                    # The blend never crosses to a bone more than one away, and
-                    # never inverts: weightA stays the dominant weight.
                     assert np.all(rig.weights_a >= 0.5)
                     step = np.abs(rig.bone_indices_a - rig.bone_indices_b)
                     assert np.all(step <= 1)
@@ -172,8 +130,6 @@ class TestSegmentationSweep:
                     f"| max_bind_dist={_fmt(error['max_distance'])}"
                 )
 
-        # Per-vertex detail at the default configuration, so the blend profile
-        # itself is reviewable rather than only its extremes.
         rig = build_rig(
             vertex_positions=positions,
             stem_ids=np.zeros(n),
@@ -199,11 +155,6 @@ class TestSegmentationSweep:
 
 
 class TestTopology:
-    """T2: parent recovery and forward-sweep ordering on a branching tree.
-
-    Covers M1 (parent index below own index) and M2 (correct parent chain), the
-    two failures the consuming engine cannot detect at all.
-    """
 
     def test_parents_are_recovered_and_ordered(self):
         tree = make_synthetic_tree()
@@ -218,9 +169,6 @@ class TestTopology:
         )
         parents = resolve_chain_parents(chains)
 
-        # M2: the trunk is a root; both depth-1 branches hang off the trunk; the
-        # depth-2 twig hangs off chain 1, whose chain its pivot actually touches,
-        # not off chain 2 and not off the trunk.
         assert parents[0] == -1
         assert parents[1] == 0
         assert parents[2] == 0
@@ -228,20 +176,10 @@ class TestTopology:
 
         rig = build_rig(**tree)
 
-        # M1: every bone's parent precedes it, so the forward pose sweep reads
-        # only already-computed parents.
         assert not validate_rig(rig)
         for index, bone in enumerate(rig.bones):
             assert bone.parent < index
 
-        # A branch attaches to the parent segment that geometrically contains
-        # the junction, so it swings on an arc that actually passes through the
-        # point where it joins. Attaching to either end of the parent chain puts
-        # it on the wrong arc, which is the failure the whole rig exists to fix.
-        #
-        # Checked against the junction position rather than against an expected
-        # bone index, so the assertion cannot encode the same off-by-one the
-        # implementation might have.
         for bone in rig.bones:
             if bone.segment != 0 or bone.parent < 0:
                 continue
@@ -249,14 +187,11 @@ class TestTopology:
             junction_offset = float(
                 (bone.rest_position - parent.rest_position) @ parent.rest_direction
             )
-            # The junction lies within the parent segment's own span.
             assert -1e-9 <= junction_offset <= parent.length + 1e-9, (
                 f"stem {bone.stem_id} joins {junction_offset:.4f}m along a parent "
                 f"segment only {parent.length:.4f}m long"
             )
 
-        # Chain 1 roots at z=2.0 on a trunk whose segments are 1m long, so it
-        # must hang off the segment spanning z=2..3, not off the trunk tip.
         chain_one_root = next(b for b in rig.bones if b.stem_id == 1 and b.segment == 0)
         assert rig.bones[chain_one_root.parent].rest_position[2] == pytest.approx(2.0)
 
@@ -293,12 +228,6 @@ class TestTopology:
 
 
 class TestBinding:
-    """T3: per-vertex binding on the branching tree.
-
-    Covers M3 (index range), M4 (weight validity) and M5 (bind distance) — the
-    three properties that must hold for every vertex, checked exhaustively and
-    written into the artifact with any violation.
-    """
 
     def test_every_vertex_binds_soundly(self):
         tree = make_synthetic_tree()
@@ -307,31 +236,23 @@ class TestBinding:
         positions = tree["vertex_positions"]
         ids = tree["stem_ids"].astype(int)
 
-        # M3: indices are raw buffer offsets in the shader, so out of range
-        # silently samples another branch's pose.
         assert np.all(rig.bone_indices_a >= 0)
         assert np.all(rig.bone_indices_a < rig.bone_count)
         assert np.all(rig.bone_indices_b >= 0)
         assert np.all(rig.bone_indices_b < rig.bone_count)
 
-        # M4: weightB is derived as 1 - weightA and nothing renormalises it.
         assert np.all(rig.weights_a >= 0.0)
         assert np.all(rig.weights_a <= 1.0)
 
-        # A vertex only ever binds to bones of its own chain: binding across
-        # chains would make a branch follow another branch's pose.
         for vertex in range(len(positions)):
             assert rig.bones[int(rig.bone_indices_a[vertex])].stem_id == ids[vertex]
             assert rig.bones[int(rig.bone_indices_b[vertex])].stem_id == ids[vertex]
 
-        # M5: the bound bone's rest segment spans the vertex. The tolerance is
-        # the branch radius, since vertices sit on a ring around the axis.
         error = measure_rest_pose_error(rig, positions)
         assert error["max_distance"] <= float(tree["radii"].max()) + 1e-6
 
         packed = pack_bone_uv(rig.bone_indices_a, rig.bone_indices_b, rig.weights_a)
         assert len(packed) == len(positions) * 4
-        # The fourth component is unused by the contract and must be zero.
         assert np.all(packed[3::4] == 0.0)
         assert packed[0::4] == pytest.approx(rig.bone_indices_a.astype(float))
         assert packed[1::4] == pytest.approx(rig.bone_indices_b.astype(float))
@@ -375,12 +296,25 @@ class TestBinding:
 
         write_artifact("binding.txt", lines)
 
-    def test_empty_and_degenerate_input(self):
-        """A rig built from nothing is empty rather than malformed.
+    def test_skin_weights_sum_to_one(self):
+        tree = make_synthetic_tree()
+        rig = build_rig(**tree)
 
-        The export path can be pointed at a mesh with no branch attributes, and
-        an empty rig with a non-zero bone count would index into nothing.
-        """
+        for vertex in range(len(tree["vertex_positions"])):
+            index_a = int(rig.bone_indices_a[vertex])
+            index_b = int(rig.bone_indices_b[vertex])
+            weight_a = float(rig.weights_a[vertex])
+
+            accumulated = {index_a: weight_a}
+            if weight_a < 1.0:
+                extra = 1.0 if index_b == index_a else 1.0 - weight_a
+                accumulated[index_b] = accumulated.get(index_b, 0.0) + extra
+
+            assert sum(accumulated.values()) == pytest.approx(1.0), (
+                f"vertex {vertex} weights sum to {sum(accumulated.values())}"
+            )
+
+    def test_empty_and_degenerate_input(self):
         rig = build_rig(
             vertex_positions=np.zeros((0, 3)),
             stem_ids=np.zeros(0),
@@ -394,8 +328,6 @@ class TestBinding:
         assert not validate_rig(rig)
         assert len(pack_bone_uv(rig.bone_indices_a, rig.bone_indices_b, rig.weights_a)) == 0
 
-        # A chain too short to segment gets one bone rather than a division by
-        # its own near-zero length.
         n = 4
         rig = build_rig(
             vertex_positions=np.zeros((n, 3)),
@@ -409,3 +341,151 @@ class TestBinding:
         assert rig.bone_count == 1
         assert not validate_rig(rig)
         assert np.all(rig.weights_a == 1.0)
+
+
+def _tip_direction(rig, matrices, stem_id):
+    indices = [i for i, bone in enumerate(rig.bones) if bone.stem_id == stem_id]
+    last = indices[-1]
+    direction = matrices[last][:3, :3] @ rig.bones[last].rest_direction
+    return direction / np.linalg.norm(direction)
+
+
+class TestWindPose:
+
+    @pytest.mark.parametrize(
+        "label,trunk_base,trunk_tip",
+        [("soft_trunk", 0.1, 0.0), ("default_trunk", 1.0, 0.6)],
+    )
+    def test_wind_moves_the_tree_like_wind(self, label, trunk_base, trunk_tip):
+        tree = make_synthetic_tree()
+        rig = build_rig(
+            **tree,
+            trunk_base_stiffness=trunk_base,
+            trunk_tip_stiffness=trunk_tip,
+        )
+        positions = tree["vertex_positions"]
+
+        rest = deform_vertices(rig, positions, pose_rig(rig, 0.0, 0.0))
+        rest_drift = float(np.abs(rest - positions).max())
+
+        downwind = deform_vertices(rig, positions, pose_rig(rig, 0.0, 1.0))
+        offset = downwind - positions
+        most_upwind = float(offset[:, 0].min())
+        largest_drop = float(offset[:, 2].min())
+
+        step = 0.5
+        samples = {}
+        for degrees in np.arange(0.0, 360.0 + step, step):
+            samples[float(degrees)] = deform_vertices(
+                rig, positions, pose_rig(rig, float(degrees), 1.0)
+            )
+
+        keys = sorted(samples)
+        jumps = [
+            float(np.linalg.norm(samples[b] - samples[a], axis=1).max())
+            for a, b in zip(keys, keys[1:])
+        ]
+        worst_jump = max(jumps)
+        worst_at = keys[jumps.index(worst_jump) + 1]
+        peak = max(
+            float(np.linalg.norm(samples[d] - positions, axis=1).max()) for d in keys
+        )
+
+        def interpolation_error(directions):
+            spacing = 360.0 / directions
+            baked = [
+                deform_vertices(rig, positions, pose_rig(rig, i * spacing, 1.0))
+                for i in range(directions)
+            ]
+            worst = 0.0
+            for i in range(directions):
+                for fraction in np.linspace(0.0, 1.0, 9):
+                    degrees = i * spacing + fraction * spacing
+                    truth = deform_vertices(rig, positions, pose_rig(rig, degrees, 1.0))
+                    blend = (1.0 - fraction) * baked[i] + fraction * baked[
+                        (i + 1) % directions
+                    ]
+                    worst = max(
+                        worst, float(np.linalg.norm(truth - blend, axis=1).max())
+                    )
+            return worst
+
+        counts = (8, 16, 32)
+        errors = {n: interpolation_error(n) for n in counts}
+
+        matrices = pose_rig(rig, 0.0, 1.0)
+        tips = {stem: _tip_direction(rig, matrices, stem) for stem in (0, 1, 2, 3)}
+
+        violations = []
+        if rest_drift > 1e-9:
+            violations.append(f"rest pose drifts by {rest_drift:.9f}")
+        if most_upwind < -1e-3:
+            violations.append(f"a vertex travels {abs(most_upwind):.4f} upwind")
+        if largest_drop < -0.5 * peak:
+            violations.append(
+                f"a vertex drops {abs(largest_drop):.4f}, over half the "
+                f"{peak:.4f} peak displacement"
+            )
+        if tips[0][2] < -0.5:
+            violations.append(
+                f"trunk tip points {tips[0][2]:+.2f} in Z; it has folded back on itself"
+            )
+        for stem in (1, 3):
+            if tips[stem][2] < -0.35:
+                violations.append(
+                    f"stem {stem} tip points {tips[stem][2]:+.2f} in Z; wind drove it into the ground"
+                )
+        if worst_jump > 0.15 * peak:
+            violations.append(
+                f"pose jumps {worst_jump:.6f} at {worst_at:g} deg, "
+                f"{100 * worst_jump / peak:.1f}% of peak displacement"
+            )
+        coarse, fine = counts[0], counts[1]
+        if errors[fine] > 0.6 * errors[coarse]:
+            violations.append(
+                f"doubling {coarse} to {fine} directions cut error only "
+                f"{errors[coarse] / errors[fine]:.2f}x; expected about 4x"
+            )
+
+        finest = errors[counts[-1]]
+        if finest > 0.05 * peak:
+            violations.append(
+                f"{counts[-1]} directions still leave {finest:.6f} error, "
+                f"{100 * finest / peak:.1f}% of peak displacement"
+            )
+
+        lines = [
+            f"# wind pose: {label} (trunk base {trunk_base:g}, tip {trunk_tip:g})",
+            f"# {rig.bone_count} bones, {len(positions)} vertices, "
+            f"antiparallel band {ANTIPARALLEL_BAND:g}",
+            "",
+            f"rest_drift_at_zero_strength {_fmt(rest_drift)}",
+            f"peak_displacement {_fmt(peak)}",
+            "",
+            "# wind blowing along +X at full strength",
+            f"most_upwind_travel {_fmt(most_upwind)}",
+            f"largest_drop {_fmt(largest_drop)}",
+            "",
+            "# posed direction of each chain tip; Z below zero points at the ground",
+            *(
+                f"stem{stem}_tip {_fmt(tips[stem][0])} {_fmt(tips[stem][1])} {_fmt(tips[stem][2])}"
+                for stem in sorted(tips)
+            ),
+            "",
+            f"# largest vertex move between adjacent {step:g} deg samples",
+            f"worst_jump {_fmt(worst_jump)} at_degrees {_fmt(worst_at)}",
+            "",
+            "# interpolating N baked directions against the true pose between them",
+            "# columns: directions | max_error | ratio_to_previous",
+        ]
+
+        previous = None
+        for n in counts:
+            ratio = "-" if previous is None else _fmt(errors[n] / previous)
+            lines.append(f"{n:3d} {_fmt(errors[n])} {ratio}")
+            previous = errors[n]
+
+        lines.extend(["", "# violations"] + ([f"  {v}" for v in violations] or ["  none"]))
+        write_artifact(f"wind_pose_{label}.txt", lines)
+
+        assert not violations, "; ".join(violations)

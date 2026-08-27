@@ -1,0 +1,622 @@
+"""Object lifecycle tests. These require a real bpy and cannot run in tier 1.
+
+Every generated tree owns its mesh, armature, morphs and vertex groups
+exclusively. The failures guarded here are silent: two assets sharing an
+armature still both look built, and an accumulated rig still renders — it just
+renders and exports wrong.
+"""
+
+from pathlib import Path
+
+import bpy
+import pytest
+
+from python_classes.nodes.base_types.node import SEED_PROPERTY
+from python_classes.pivot_painter.tree_asset import (
+    armature_name_for,
+    find_armature,
+    link_exclusively,
+    owning_collection,
+    resolve_mesh_object,
+    strip_rig,
+)
+
+ARTIFACT_DIR = Path(__file__).parent.parent / "artifacts" / "blender"
+
+pytestmark = pytest.mark.blender
+
+
+def make_mesh_object(name, collection=None):
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata([(0, 0, 0), (0, 0, 1), (1, 0, 1)], [], [(0, 1, 2)])
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    (collection or bpy.context.scene.collection).objects.link(obj)
+    return obj
+
+
+def attach_rig(obj, collection=None):
+    """Give obj an armature, a bind and a vertex group, as a real rig build does."""
+    name = armature_name_for(obj)
+    armature = bpy.data.objects.new(name, bpy.data.armatures.new(name))
+    (collection or owning_collection(obj)).objects.link(armature)
+    obj.parent = armature
+    obj.modifiers.new("Armature", "ARMATURE").object = armature
+    obj.vertex_groups.new(name="stem0_seg0")
+    return armature
+
+
+def rig_state(obj):
+    return {
+        "armature_modifiers": len([m for m in obj.modifiers if m.type == "ARMATURE"]),
+        "vertex_groups": len(obj.vertex_groups),
+        "parent": obj.parent.name if obj.parent else None,
+        "armature": find_armature(obj) is not None,
+        "shape_keys": 0 if obj.data.shape_keys is None else len(obj.data.shape_keys.key_blocks),
+    }
+
+
+class TestAssetIsolation:
+    """M6/M9: an operation reaches only the asset it was handed."""
+
+    def test_asset_isolation(self):
+        col = bpy.data.collections.new("iso_variants")
+        bpy.context.scene.collection.children.link(col)
+
+        a = make_mesh_object("iso_a")
+        b = make_mesh_object("iso_b")
+        link_exclusively(b, col)
+
+        assert armature_name_for(a) != armature_name_for(b)
+        assert owning_collection(b).name == col.name
+        assert b.name not in bpy.context.scene.collection.objects
+
+        arm_a = attach_rig(a)
+        arm_b = attach_rig(b)
+
+        assert find_armature(a).name == arm_a.name
+        assert find_armature(b).name == arm_b.name
+        assert arm_b.name in col.objects, "armature must follow its mesh's collection"
+
+        before_b = rig_state(b)
+        strip_rig(a)
+
+        assert find_armature(a) is None
+        assert rig_state(b) == before_b, "stripping a disturbed b"
+
+
+class TestRebuild:
+    """M7: repeating an operation must not accumulate state."""
+
+    @pytest.mark.parametrize("repeats", [1, 2, 5])
+    def test_rebuild_idempotent(self, repeats):
+        obj = make_mesh_object(f"rebuild_{repeats}")
+
+        for _ in range(repeats):
+            strip_rig(obj)
+            attach_rig(obj)
+
+        state = rig_state(obj)
+        assert state["armature_modifiers"] == 1
+        assert state["vertex_groups"] == 1
+
+        strip_rig(obj)
+        assert rig_state(obj) == {
+            "armature_modifiers": 0,
+            "vertex_groups": 0,
+            "parent": None,
+            "armature": False,
+            "shape_keys": 0,
+        }
+
+    def test_strip_survives_missing_rig(self):
+        obj = make_mesh_object("never_rigged")
+        strip_rig(obj)
+        strip_rig(obj)
+        assert rig_state(obj)["armature_modifiers"] == 0
+
+
+class TestNodeGraph:
+    """M8/M10: graph-level behaviour that needs registered Blender types."""
+
+    def test_variant_inherits_mesher_settings(self, node_tree):
+        mesher, variants = node_tree.mesher, node_tree.variants
+
+        assert "radial_resolution" not in variants.bl_rna.properties, (
+            "Variants must not carry its own mesh settings; they would drift"
+        )
+        found = variants.get_mesher()
+        assert found is not None and found.name == mesher.name
+        assert len(variants.inputs) == 1 and len(variants.outputs) == 0
+
+        a = make_mesh_object("inherit_hi")
+        b = make_mesh_object("inherit_lo")
+
+        mesher.radial_resolution = 32
+        mesher.build_into(a, 0)
+        high = len(a.data.vertices)
+
+        mesher.radial_resolution = 8
+        mesher.build_into(b, 0)
+        low = len(b.data.vertices)
+
+        assert high > low > 0, f"resolution ignored: {high} vs {low}"
+        assert len(a.data.vertices) == high, "building b disturbed a"
+
+    def test_seed_offset_does_not_mutate_graph(self, node_tree):
+        mesher = node_tree.mesher
+        trunk = node_tree.trunk
+
+        seeds = [s for s in trunk.inputs if s.property_name == SEED_PROPERTY]
+        assert seeds, "trunk carries no seed socket"
+        before = [s.property_value for s in seeds]
+
+        obj = make_mesh_object("seed_probe")
+        for variant in range(4):
+            mesher.build_into(obj, variant * 7919)
+
+        assert [s.property_value for s in seeds] == before
+
+    def test_socket_edit_schedules_rebuild(self, node_tree):
+        """M11: with the 10Hz poll gone, the setter is the only notification."""
+        from python_classes.nodes import debounce
+
+        mesher = node_tree.mesher
+        trunk = node_tree.trunk
+
+        socket = next(s for s in trunk.inputs if s.bl_idname == "mt_IntSocket")
+
+        debounce.cancel_pending()
+        assert not debounce._pending_timers
+
+        socket.property_value = socket.property_value + 1
+        assert debounce._pending_timers, "socket edit scheduled no rebuild"
+
+        target = next(iter(debounce._pending_timers))
+        assert target[1] == mesher.name, f"rebuild aimed at {target[1]}"
+
+        debounce.cancel_pending()
+        assert not debounce._pending_timers, "cancel_pending leaked a timer"
+
+    def test_growth_clamp_does_not_write_sockets(self, node_tree):
+        """M12: correcting an invalid threshold pair must not touch the graph."""
+        from python_classes.nodes import debounce
+
+        tree = node_tree.tree
+        trunk = node_tree.trunk
+
+        growth = tree.nodes.new("mt_GrowthNode")
+        tree.links.new(trunk.outputs[0], growth.inputs[0])
+
+        def socket(name):
+            return next(s for s in growth.inputs if s.property_name == name)
+
+        socket("enable_flowering").property_value = True
+        socket("cut_threshold").property_value = 0.5
+        socket("flower_threshold").property_value = 0.2
+
+        authored = socket("flower_threshold").property_value
+        debounce.cancel_pending()
+
+        built = growth.construct_function()
+
+        assert socket("flower_threshold").property_value == authored, (
+            "construct_function rewrote the authored threshold"
+        )
+        assert not debounce._pending_timers, "building scheduled a rebuild"
+        assert built.flower_threshold > 0.5, built.flower_threshold
+
+    def test_socket_clamp(self, node_tree):
+        trunk = node_tree.trunk
+
+        socket = next(
+            (s for s in trunk.inputs if s.bl_idname == "mt_IntSocket"), None
+        )
+        assert socket is not None, "trunk carries no int socket"
+
+        low, high = socket.min_value, socket.max_value
+
+        socket.property_value = high + 1000
+        assert socket.property_value == high
+
+        socket.property_value = low - 1000
+        assert socket.property_value == low
+
+
+class TestGenerate:
+    """M15: a failed rig build leaves global mode dirty and poisons later builds."""
+
+    def test_generate_with_and_without_rig(self, node_tree):
+        mesher = node_tree.mesher
+        mesher.tree_object = ""
+
+        mesher.build_bone_rig = True
+        mesher.build_tree()
+        assert not mesher.status_is_error, mesher.status_message
+        assert bpy.context.mode == "OBJECT", f"left in {bpy.context.mode}"
+
+        tree_obj = resolve_mesh_object(mesher.tree_object)
+        assert tree_obj is not None and len(tree_obj.data.vertices) > 0
+        assert find_armature(tree_obj) is not None
+
+        mesher.build_bone_rig = False
+        mesher.build_tree()
+        assert not mesher.status_is_error, mesher.status_message
+        assert find_armature(tree_obj) is None, "dead rig survived a rig-off rebuild"
+
+        mesher.build_tree()
+        assert not mesher.status_is_error, mesher.status_message
+        assert bpy.context.mode == "OBJECT"
+
+
+class TestEmptyBuild:
+    """M16: an empty build reported success, so the rig blamed branch chains."""
+
+    @pytest.mark.parametrize(
+        ("length", "resolution", "expect_empty"),
+        [
+            (0.0, 3.0, True),
+            (14.0, 0.0, True),
+            # TEST_POINT: neither value is zero here — the product is what matters,
+            # so a check for zero would pass these straight through.
+            (14.0, 0.05, True),
+            (0.3, 3.0, True),
+            (0.5, 3.0, False),
+            (14.0, 0.1, False),
+        ],
+    )
+    def test_empty_mesh_is_reported_at_the_mesher(
+        self, node_tree, length, resolution, expect_empty
+    ):
+        mesher, trunk = node_tree.mesher, node_tree.trunk
+
+        for name, value in (("length", length), ("resolution", resolution)):
+            next(s for s in trunk.inputs if s.property_name == name).property_value = value
+
+        mesher.build_bone_rig = False
+        mesher.tree_object = ""
+        mesher.build_tree()
+
+        if not expect_empty:
+            assert not mesher.status_is_error, mesher.status_message
+            return
+
+        assert mesher.status_is_error
+        assert "no geometry" in mesher.status_message, mesher.status_message
+        assert "segments" in mesher.status_message, (
+            "the message must name the product, not a single zeroed value"
+        )
+        assert "branch chains" not in mesher.status_message
+
+
+class TestNodeDraw:
+    """M18: an exception mid-draw aborts the node, hiding every panel below."""
+
+    class _Layout:
+        """Records emitted elements and reads every property drawn."""
+
+        def __init__(self, sink):
+            self.sink = sink
+            self.enabled = True
+            self.alert = False
+
+        def box(self):
+            self.sink.append("box")
+            return self
+
+        def row(self):
+            return self
+
+        def column(self):
+            return self
+
+        def label(self, **kwargs):
+            self.sink.append("label:" + kwargs.get("text", ""))
+
+        def prop(self, target, name, **kwargs):
+            self.sink.append("prop:" + name)
+            getattr(target, name)
+
+        def prop_search(self, *args, **kwargs):
+            self.sink.append("prop_search")
+
+        def operator(self, idname, **kwargs):
+            self.sink.append("op:" + kwargs.get("text", ""))
+
+            class Props:
+                def __setattr__(self, key, value):
+                    pass
+
+            return Props()
+
+    def _draw(self, node):
+        emitted = []
+        node.draw_buttons(bpy.context, self._Layout(emitted))
+        return emitted
+
+    @pytest.mark.parametrize("built", [False, True])
+    def test_draw_emits_wind_controls(self, node_tree, built):
+        mesher = node_tree.mesher
+        mesher.build_bone_rig = True
+
+        if built:
+            mesher.tree_object = ""
+            mesher.build_tree()
+            assert not mesher.status_is_error, mesher.status_message
+
+        emitted = self._draw(mesher)
+
+        assert not any(e.startswith("label:UI error") for e in emitted), emitted
+        assert "prop:preview_wind_angle" in emitted, emitted
+        assert "prop:preview_wind_strength" in emitted, emitted
+        assert "op:Bake Wind Morphs" in emitted, emitted
+
+    def test_draw_never_writes_id_data(self, node_tree):
+        """Blender forbids writing ID data while drawing; doing so aborts the
+        draw and silently truncates the node.
+        """
+        mesher = node_tree.mesher
+        mesher.build_bone_rig = True
+
+        # TEST_POINT: an object that exists but is unlinked is what makes the
+        # old code create-and-link during draw; a fully absent or fully linked
+        # object takes branches that happen not to write.
+        orphan = make_mesh_object("draw_orphan")
+        for collection in list(orphan.users_collection):
+            collection.objects.unlink(orphan)
+        mesher.tree_object = orphan.name
+
+        before_objects = set(bpy.data.objects.keys())
+        before_meshes = set(bpy.data.meshes.keys())
+
+        self._draw(mesher)
+
+        assert set(bpy.data.objects.keys()) == before_objects, "draw created an object"
+        assert set(bpy.data.meshes.keys()) == before_meshes, "draw created a mesh"
+        assert not orphan.users_collection, "draw linked the object into a collection"
+        assert bpy.context.view_layer.objects.active is not orphan, (
+            "draw changed the active object"
+        )
+
+
+class TestWindMorphs:
+    """M20: poses that compound instead of starting from rest shred the mesh."""
+
+    @pytest.mark.parametrize("keep_armature", [False, True])
+    def test_morphs_do_not_accumulate(self, node_tree, keep_armature):
+        import numpy as np
+
+        from python_classes.pivot_painter.formats.foliage import FoliageExporter
+        from python_classes.pivot_painter.wind_morphs import (
+            MORPH_PREFIX,
+            bake_wind_morphs,
+        )
+
+        mesher = node_tree.mesher
+        node_tree.add_branch()
+
+        obj = make_mesh_object(f"morph_{int(keep_armature)}")
+        mesher.build_into(obj, 0)
+        FoliageExporter(mesh=obj.data).export()
+
+        count, message = bake_wind_morphs(
+            obj,
+            directions=4,
+            segments_per_chain=mesher.segments_per_chain,
+            keep_armature=keep_armature,
+            **mesher._stiffness_settings(),
+        )
+        assert count == 4, message
+
+        keys = obj.data.shape_keys.key_blocks
+        base = np.array([v.co for v in keys["Basis"].data])
+        extent = float(np.linalg.norm(base.max(0) - base.min(0)))
+
+        offsets = []
+        for key in keys:
+            if not key.name.startswith(MORPH_PREFIX):
+                continue
+            posed = np.array([v.co for v in key.data])
+            offsets.append(float(np.linalg.norm(posed - base, axis=1).max()))
+
+        assert offsets, "no morphs written"
+
+        # TEST_POINT: compounding shows up as a monotonic climb across
+        # directions, and as displacement far exceeding the tree itself.
+        assert max(offsets) < extent, f"offset {max(offsets):.2f} exceeds size {extent:.2f}"
+        assert max(offsets) < 3 * min(offsets), f"uneven across directions: {offsets}"
+
+
+class TestArmatureVisibility:
+    """M19: hiding the rig must not stop it deforming the mesh."""
+
+    def test_hide_survives_rebuild_and_keeps_posing(self, node_tree):
+        mesher = node_tree.mesher
+        mesher.build_bone_rig = True
+        mesher.tree_object = ""
+        mesher.build_tree()
+
+        armature = mesher._get_armature()
+        assert armature is not None and not armature.hide_viewport
+
+        # TEST_POINT: pose the rig before hiding, so the comparison below
+        # isolates visibility rather than whether this tree bends at all.
+        mesher.preview_wind_strength = 1.0
+        visible_pose = [tuple(b.rotation_quaternion) for b in armature.pose.bones]
+        mesher.clear_pose_preview()
+
+        mesher.hide_armature = True
+        assert armature.hide_viewport
+
+        mesher.preview_wind_strength = 1.0
+        hidden_pose = [tuple(b.rotation_quaternion) for b in armature.pose.bones]
+        assert hidden_pose == visible_pose, "hiding the rig changed the pose"
+
+        tree_obj = resolve_mesh_object(mesher.tree_object)
+        assert any(
+            modifier.type == "ARMATURE" for modifier in tree_obj.modifiers
+        ), "hidden rig lost its deform binding"
+
+        mesher.clear_pose_preview()
+        mesher.build_tree()
+        assert mesher._get_armature().hide_viewport, "rebuild lost the hidden state"
+
+        mesher.hide_armature = False
+        assert not mesher._get_armature().hide_viewport
+
+
+class TestDiagnostics:
+    """M17: a build failure must name the stage that failed."""
+
+    def test_stages_are_logged(self, node_tree):
+        """The logger does not propagate, so caplog cannot see it: attach a
+        handler directly, the same way a user reading the console does.
+        """
+        import logging
+
+        from python_classes import diagnostics
+
+        mesher, trunk = node_tree.mesher, node_tree.trunk
+
+        records = []
+
+        class Capture(logging.Handler):
+            def emit(self, record):
+                records.append(self.format(record))
+
+        handler = Capture()
+        logger = logging.getLogger(diagnostics.LOGGER_NAME)
+
+        diagnostics.set_enabled(True)
+        logger.addHandler(handler)
+        try:
+            obj = make_mesh_object("logged_tree")
+            mesher.build_into(obj, 0)
+
+            text = "\n".join(records)
+            assert "build_into" in text
+            assert "mesh_tree" in text
+            assert "verts=" in text
+
+            records.clear()
+
+            socket = next(s for s in trunk.inputs if s.property_name == "length")
+            socket.property_value = 0
+            with pytest.raises(ValueError):
+                mesher.build_into(obj, 0)
+
+            failure = "\n".join(records)
+            assert "FAILED" in failure
+            assert "verts=0" in failure, failure
+        finally:
+            logger.removeHandler(handler)
+            diagnostics.set_enabled(False)
+
+    def test_disabled_by_default(self):
+        from python_classes import diagnostics
+
+        diagnostics.set_enabled(False)
+        assert not diagnostics.is_enabled()
+
+
+class TestRigCache:
+    """M14: a stale rig poses bones against topology that no longer exists."""
+
+    def test_cache_invalidates(self, node_tree):
+        from python_classes.pivot_painter import wind_morphs
+        from python_classes.pivot_painter.formats.foliage import FoliageExporter
+
+        mesher = node_tree.mesher
+        obj = make_mesh_object("cached_tree")
+        mesher.build_into(obj, 0)
+        FoliageExporter(mesh=obj.data).export()
+
+        stiffness = mesher._stiffness_settings()
+        wind_morphs.clear_rig_cache()
+
+        first = wind_morphs.build_rig_for(obj.data, 4, stiffness, use_cache=True)
+        assert wind_morphs.build_rig_for(obj.data, 4, stiffness, use_cache=True) is first
+
+        softer = dict(stiffness, branch_stiffness=0.25)
+        assert wind_morphs.build_rig_for(obj.data, 4, softer, use_cache=True) is not first
+
+        assert (
+            wind_morphs.build_rig_for(obj.data, 4, stiffness, use_cache=False) is not first
+        ), "bake paths must not read the cache"
+
+        strip_rig(obj)
+        assert not wind_morphs._rig_cache, "strip_rig left a stale rig cached"
+
+
+class TestExportPayload:
+    """M13: morph-safe writer settings must follow the objects, not selection."""
+
+    def test_morph_detection_ignores_selection(self, node_tree):
+        from python_classes.pivot_painter.wind_morphs import MORPH_PREFIX
+
+        tree = node_tree.tree
+        export = tree.nodes.new("mt_MeshExportNode")
+
+        plain = make_mesh_object("payload_plain")
+        morphed = make_mesh_object("payload_morphed")
+        morphed.shape_key_add(name="Basis", from_mix=False)
+        morphed.shape_key_add(name=f"{MORPH_PREFIX}000", from_mix=False)
+
+        for obj in bpy.context.scene.objects:
+            obj.select_set(False)
+        plain.select_set(True)
+
+        assert export._has_wind_morphs([morphed]) is True
+        assert export._has_wind_morphs([plain]) is False
+        assert export._has_wind_morphs([plain, morphed]) is True, (
+            "a batch containing morphs must use morph-safe settings for the whole file"
+        )
+
+        tree.nodes.remove(export)
+
+
+def test_snapshot(node_tree):
+    mesher, variants = node_tree.mesher, node_tree.variants
+
+    col = bpy.data.collections.new("snapshot_variants")
+    bpy.context.scene.collection.children.link(col)
+
+    lines = ["# asset ownership after two builds and one rebuild", ""]
+    lines.append(f"{'object':>20} {'collection':>20} {'armature':>24} {'verts':>7}")
+
+    assets = []
+    for index in range(2):
+        name = f"{col.name}_{index:03d}"
+        obj = resolve_mesh_object(name) or bpy.data.objects.new(
+            name, bpy.data.meshes.new(name)
+        )
+        link_exclusively(obj, col)
+        mesher.build_into(obj, index * 7919)
+        assets.append(obj)
+
+    mesher.build_into(assets[0], 0)
+
+    for obj in assets:
+        armature = find_armature(obj)
+        lines.append(
+            f"{obj.name:>20} {owning_collection(obj).name:>20} "
+            f"{(armature.name if armature else '-'):>24} {len(obj.data.vertices):>7}"
+        )
+
+    names = {obj.name for obj in assets}
+    lines += [
+        "",
+        "# invariants",
+        f"distinct armature names: {len({armature_name_for(o) for o in assets})}/{len(assets)}",
+        f"each asset in exactly one collection: {all(len(o.users_collection) == 1 for o in assets)}",
+        f"no name collisions: {len(names) == len(assets)}",
+        f"variants node carries own mesh settings: "
+        f"{'radial_resolution' in variants.bl_rna.properties}",
+    ]
+
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    (ARTIFACT_DIR / "asset_ownership.txt").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+
+    assert len({armature_name_for(o) for o in assets}) == len(assets)

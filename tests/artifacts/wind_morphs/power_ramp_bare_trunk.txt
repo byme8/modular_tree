@@ -1,0 +1,15 @@
+# wind power ramp: bare_trunk
+# trunk stiffness [1.0, 0.7, 0.4, 0.1]
+# branches (attach, tilt_deg, stiffness) []
+# 4 bones in 1 chains, wind along +X
+
+# columns: power | max_drift | trunk_tip_x | trunk_tip_z | lowest_z
+0.000000 0.000000 0.000000 3.000000 0.000000
+0.200000 0.084764 0.084764 2.997403 0.000000
+0.400000 0.169172 0.169172 2.989624 0.000000
+0.600000 0.252871 0.252871 2.976701 0.000000
+0.800000 0.335510 0.335510 2.958695 0.000000
+1.000000 0.416744 0.416744 2.935694 0.000000
+
+# violations
+  none

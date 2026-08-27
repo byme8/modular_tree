@@ -9,7 +9,9 @@ class MtreeBoolSocket(bpy.types.NodeSocket, MtreeSocket):
 
     color = (0.8, 0.8, 0.2, 0.5)
 
-    property_value: bpy.props.BoolProperty(default=True)
+    property_value: bpy.props.BoolProperty(
+        default=True, update=lambda self, context: self.request_rebuild()
+    )
 
     def draw(self, context, layout, node, text):
         if self.is_output or self.is_linked:
