@@ -11,6 +11,8 @@
 #include "source/tree_functions/GrowthFunction.hpp"
 #include "source/meshers/splines_mesher/BasicMesher.hpp"
 #include "source/meshers/manifold_mesher/ManifoldMesher.hpp"
+#include "source/meshers/block_fill/BlockFill.hpp"
+#include "source/meshers/block_fill/LeafCards.hpp"
 #include "source/leaf/LeafShapeGenerator.hpp"
 #include "source/leaf/LeafPresets.hpp"
 #include "source/leaf/VenationGenerator.hpp"
@@ -860,6 +862,405 @@ TEST(lod_impostor_view_directions_upper_hemisphere)
 		// All directions should be approximately unit vectors
 		float len = d.norm();
 		ASSERT_TRUE(std::abs(len - 1.0f) < 0.01f);
+	}
+}
+
+namespace
+{
+constexpr float TRUNK_RADIUS = 0.25f;
+constexpr float TRUNK_LENGTH = 1.0f;
+constexpr float TOP_RADIUS = 0.2f;
+constexpr float TOP_LENGTH = 0.5f;
+constexpr float TWIG_RADIUS = 0.1f;
+constexpr float TWIG_LENGTH = 0.5f;
+constexpr float BLOCK_DENSITY = 10.0f;
+constexpr float BLOCK_SCALE = 1.0f;
+constexpr float CARD_SIZE = 0.2f;
+constexpr float CARD_DENSITY = 20.0f;
+constexpr float CARD_SPREAD = 0.3f;
+constexpr int VERTICES_PER_BLOCK = 8;
+constexpr int VERTICES_PER_CARD = 8;
+
+// TEST_POINT: the first child of a node continues its stem, so a side branch
+// needs a sibling ahead of it; a trunk with a single child is one chain and
+// every stem id and depth assertion passes vacuously.
+Tree fixed_skeleton()
+{
+	Tree tree;
+	Node trunk(Vector3{0, 0, 1}, Vector3{1, 0, 0}, TRUNK_LENGTH, TRUNK_RADIUS, 0);
+	trunk.children.push_back(std::make_shared<NodeChild>(
+	    NodeChild{Node(Vector3{0, 0, 1}, Vector3{1, 0, 0}, TOP_LENGTH, TOP_RADIUS, 0), 1.0f}));
+	trunk.children.push_back(std::make_shared<NodeChild>(
+	    NodeChild{Node(Vector3{1, 0, 0}, Vector3{0, 1, 0}, TWIG_LENGTH, TWIG_RADIUS, 1), 1.0f}));
+	tree.get_stems().push_back(Stem{trunk, Vector3{0, 0, 0}});
+	return tree;
+}
+
+BlockFill block_fill(int seed = 0)
+{
+	BlockFill fill;
+	fill.density = BLOCK_DENSITY;
+	fill.scale = BLOCK_SCALE;
+	fill.seed = seed;
+	return fill;
+}
+
+LeafCards leaf_cards(int seed = 0)
+{
+	LeafCards cards;
+	cards.card_size = CARD_SIZE;
+	cards.density = CARD_DENSITY;
+	cards.spread = CARD_SPREAD;
+	cards.tilt_variation_degrees = 90.0f;
+	cards.seed = seed;
+	return cards;
+}
+
+Mesh blocks_and_cards(int block_seed = 0, int leaf_seed = 0)
+{
+	Tree tree = fixed_skeleton();
+	Mesh mesh = block_fill(block_seed).mesh_tree(tree);
+	leaf_cards(leaf_seed).append(tree, mesh);
+	return mesh;
+}
+
+const std::vector<float>& floats(Mesh& mesh, const std::string& name)
+{
+	return static_cast<Attribute<float>*>(mesh.attributes.at(name).get())->data;
+}
+
+const std::vector<Vector3>& vectors(Mesh& mesh, const std::string& name)
+{
+	return static_cast<Attribute<Vector3>*>(mesh.attributes.at(name).get())->data;
+}
+
+Vector3 centroid(const Mesh& mesh, const std::array<int, 4>& polygon)
+{
+	Vector3 sum{0, 0, 0};
+	for (int index : polygon)
+		sum += mesh.vertices[(size_t)index];
+	return sum / 4.0f;
+}
+
+struct ExpectedBlock
+{
+	Vector3 centre;
+	Vector3 direction;
+	float thickness;
+	float stem_id;
+	float depth;
+	Vector3 pivot;
+	float extent;
+};
+
+// TEST_POINT: the manifold walk hands the trunk id 0 and pre-increments for
+// every side branch, so the first side branch is 2, never 1; blocks numbering
+// it 1 would put the same twig on a different chain than the manifold tree.
+ExpectedBlock expected_block(int block)
+{
+	float spacing = 1.0f / BLOCK_DENSITY;
+	int trunk_blocks = (int)std::lround(BLOCK_DENSITY * (TRUNK_LENGTH + TOP_LENGTH));
+	if (block < trunk_blocks)
+	{
+		float distance = (block + 0.5f) * spacing;
+		float thickness = distance < TRUNK_LENGTH
+		                      ? TRUNK_RADIUS + (TOP_RADIUS - TRUNK_RADIUS) * distance / TRUNK_LENGTH
+		                      : TOP_RADIUS;
+		return ExpectedBlock{Vector3{0, 0, distance}, Vector3{0, 0, 1}, thickness, 0, 0,
+		                     Vector3{0, 0, 0}, TRUNK_LENGTH + TOP_LENGTH};
+	}
+	float distance = (block - trunk_blocks + 0.5f) * spacing;
+	return ExpectedBlock{Vector3{TRUNK_RADIUS + distance, 0, TRUNK_LENGTH}, Vector3{1, 0, 0},
+	                     TWIG_RADIUS, 2, 1, Vector3{TRUNK_RADIUS, 0, TRUNK_LENGTH}, TWIG_LENGTH};
+}
+
+Vector3 block_centre(const Mesh& mesh, int block)
+{
+	Vector3 sum{0, 0, 0};
+	for (int v = 0; v < VERTICES_PER_BLOCK; v++)
+		sum += mesh.vertices[(size_t)(block * VERTICES_PER_BLOCK + v)];
+	return sum / (float)VERTICES_PER_BLOCK;
+}
+
+bool near(const Vector3& a, const Vector3& b, float tolerance = 1e-5f)
+{
+	return (a - b).norm() < tolerance;
+}
+} // namespace
+
+TEST(block_fill_fixed_skeleton_counts_and_attributes)
+{
+	Tree tree = fixed_skeleton();
+	BlockFill fill = block_fill();
+	LeafCards cards = leaf_cards();
+
+	int expected_blocks = (int)std::lround(BLOCK_DENSITY * (TRUNK_LENGTH + TOP_LENGTH)) +
+	                      (int)std::lround(BLOCK_DENSITY * TWIG_LENGTH);
+	int expected_cards = (int)std::lround(CARD_DENSITY * TWIG_LENGTH);
+	ASSERT_EQ(fill.count_polygons(tree), expected_blocks * 6);
+	ASSERT_EQ(cards.count_polygons(tree), expected_cards * 2);
+
+	Mesh mesh = fill.mesh_tree(tree);
+	cards.append(tree, mesh);
+	ASSERT_EQ(fill.block_count, expected_blocks);
+	ASSERT_EQ(fill.polygon_count, expected_blocks * 6);
+	ASSERT_EQ(cards.card_count, expected_cards);
+	ASSERT_EQ((int)mesh.polygons.size(), expected_blocks * 6 + expected_cards * 2);
+	ASSERT_EQ((int)mesh.vertices.size(),
+	          expected_blocks * VERTICES_PER_BLOCK + expected_cards * VERTICES_PER_CARD);
+	ASSERT_EQ((int)mesh.uv_loops.size(), (int)mesh.polygons.size());
+	ASSERT_EQ((int)mesh.material_indices.size(), (int)mesh.polygons.size());
+
+	for (size_t p = 0; p < mesh.polygons.size(); p++)
+	{
+		const auto& polygon = mesh.polygons[p];
+		for (int j = 0; j < 4; j++)
+		{
+			ASSERT_GE(polygon[j], 0);
+			ASSERT_TRUE(polygon[j] < (int)mesh.vertices.size());
+			for (int k = j + 1; k < 4; k++)
+				ASSERT_TRUE(polygon[j] != polygon[k]);
+		}
+		ASSERT_EQ(mesh.material_indices[p], p < (size_t)(expected_blocks * 6) ? 0 : 1);
+	}
+
+	const auto& radius = floats(mesh, "radius");
+	const auto& stem_id = floats(mesh, "stem_id");
+	const auto& depth = floats(mesh, "hierarchy_depth");
+	const auto& extent = floats(mesh, "branch_extent");
+	const auto& pivot = vectors(mesh, "pivot_position");
+	const auto& direction = vectors(mesh, "direction");
+	const auto& attachment = vectors(mesh, "leaf_attachment");
+	ASSERT_EQ((int)floats(mesh, "phyllotaxis_angle").size(), (int)mesh.vertices.size());
+	ASSERT_EQ((int)attachment.size(), (int)mesh.vertices.size());
+
+	for (int block = 0; block < expected_blocks; block++)
+	{
+		ExpectedBlock expected = expected_block(block);
+		int base = block * VERTICES_PER_BLOCK;
+		Vector3 centre = block_centre(mesh, block);
+		ASSERT_TRUE(near(centre, expected.centre));
+
+		float width = (mesh.vertices[(size_t)base + 4] - mesh.vertices[(size_t)base]).norm();
+		float length = (mesh.vertices[(size_t)base + 1] - mesh.vertices[(size_t)base]).norm();
+		ASSERT_TRUE(std::abs(width - 2.0f * expected.thickness * BLOCK_SCALE) < 1e-5f);
+		ASSERT_TRUE(std::abs(length - BLOCK_SCALE / BLOCK_DENSITY) < 1e-5f);
+
+		for (int v = base; v < base + VERTICES_PER_BLOCK; v++)
+		{
+			ASSERT_EQ(stem_id[(size_t)v], expected.stem_id);
+			ASSERT_EQ(depth[(size_t)v], expected.depth);
+			ASSERT_TRUE(std::abs(extent[(size_t)v] - expected.extent) < 1e-6f);
+			ASSERT_TRUE(near(pivot[(size_t)v], expected.pivot));
+			ASSERT_TRUE(near(direction[(size_t)v], expected.direction));
+			ASSERT_TRUE(std::abs(radius[(size_t)v] - expected.thickness) < 1e-6f);
+			ASSERT_TRUE(near(attachment[(size_t)v], centre));
+		}
+	}
+
+	Vector3 twig_start{TRUNK_RADIUS, 0, TRUNK_LENGTH};
+	for (int v = expected_blocks * VERTICES_PER_BLOCK; v < (int)mesh.vertices.size(); v++)
+	{
+		ASSERT_EQ(stem_id[(size_t)v], 2.0f);
+		ASSERT_EQ(depth[(size_t)v], 1.0f);
+		ASSERT_TRUE(std::abs(radius[(size_t)v] - TWIG_RADIUS) < 1e-6f);
+		ASSERT_TRUE(near(direction[(size_t)v], Vector3{1, 0, 0}));
+		Vector3 along = attachment[(size_t)v] - twig_start;
+		ASSERT_TRUE(std::abs(along[1]) < 1e-5f && std::abs(along[2]) < 1e-5f);
+		ASSERT_TRUE(along[0] >= -1e-6f && along[0] < TWIG_LENGTH);
+		float reach = (mesh.vertices[(size_t)v] - attachment[(size_t)v]).norm();
+		ASSERT_TRUE(reach <= TWIG_RADIUS + CARD_SPREAD + CARD_SIZE + 1e-5f);
+	}
+}
+
+TEST(leaf_cards_spread_fills_a_volume_around_the_twig)
+{
+	Tree tree = fixed_skeleton();
+	Mesh mesh;
+	LeafCards cards = leaf_cards();
+	cards.spread = 2.0f;
+	cards.density = 200.0f;
+	cards.append(tree, mesh);
+	const auto& attachment = vectors(mesh, "leaf_attachment");
+
+	float farthest = 0.0f;
+	int beyond_bark = 0;
+	for (int card = 0; card < cards.card_count; card++)
+	{
+		Vector3 centre{0, 0, 0};
+		for (int v = 0; v < VERTICES_PER_CARD; v++)
+			centre += mesh.vertices[(size_t)(card * VERTICES_PER_CARD + v)];
+		centre /= (float)VERTICES_PER_CARD;
+		float offset = (centre - attachment[(size_t)(card * VERTICES_PER_CARD)]).norm();
+		ASSERT_TRUE(offset >= TWIG_RADIUS - 1e-5f);
+		ASSERT_TRUE(offset <= TWIG_RADIUS + cards.spread + 1e-5f);
+		farthest = std::max(farthest, offset);
+		if (offset > TWIG_RADIUS + cards.spread / 2.0f)
+			beyond_bark++;
+	}
+	// TEST_POINT: a canopy needs cards throughout the spread volume, not
+	// clustered at the bark; area-uniform sampling puts most of them outside
+	// the inner half-radius.
+	ASSERT_TRUE(farthest > TWIG_RADIUS + 0.9f * cards.spread);
+	ASSERT_TRUE(beyond_bark > cards.card_count / 2);
+}
+
+TEST(block_fill_winding_matches_the_manifold_mesher)
+{
+	Mesh mesh = blocks_and_cards();
+	for (size_t p = 0; p < mesh.polygons.size(); p++)
+	{
+		if (mesh.material_indices[p] != 0)
+			continue;
+		const auto& polygon = mesh.polygons[p];
+		Vector3 centre = block_centre(mesh, polygon[0] / VERTICES_PER_BLOCK);
+		Vector3 a = mesh.vertices[(size_t)polygon[0]];
+		Vector3 b = mesh.vertices[(size_t)polygon[1]];
+		Vector3 c = mesh.vertices[(size_t)polygon[2]];
+		Vector3 normal = (b - a).cross(c - a);
+		// TEST_POINT: the Blender transfer reverses every polygon, so a native
+		// normal pointing outward here would render inside-out; the manifold
+		// mesher's native normals point inward and the blocks must match.
+		ASSERT_TRUE(normal.dot(centroid(mesh, polygon) - centre) < 0.0f);
+	}
+}
+
+TEST(block_fill_seeds_move_only_their_own_geometry)
+{
+	Mesh first = blocks_and_cards(0, 0);
+	Mesh again = blocks_and_cards(0, 0);
+	Mesh rerolled = blocks_and_cards(1, 0);
+	Mesh releafed = blocks_and_cards(0, 1);
+
+	Tree counted = fixed_skeleton();
+	int block_vertices = block_fill().count_polygons(counted) / 6 * VERTICES_PER_BLOCK;
+
+	for (const Mesh* other : {&again, &rerolled, &releafed})
+	{
+		ASSERT_EQ((int)first.vertices.size(), (int)other->vertices.size());
+		ASSERT_EQ((int)first.polygons.size(), (int)other->polygons.size());
+		for (size_t p = 0; p < first.polygons.size(); p++)
+		{
+			ASSERT_TRUE(first.polygons[p] == other->polygons[p]);
+			ASSERT_EQ(first.material_indices[p], other->material_indices[p]);
+		}
+	}
+
+	bool block_moved = false;
+	bool card_moved = false;
+	for (size_t v = 0; v < first.vertices.size(); v++)
+	{
+		ASSERT_TRUE(first.vertices[v] == again.vertices[v]);
+		bool is_block = (int)v < block_vertices;
+		if (is_block)
+		{
+			ASSERT_TRUE(first.vertices[v] == releafed.vertices[v]);
+			block_moved |= first.vertices[v] != rerolled.vertices[v];
+		}
+		else
+		{
+			ASSERT_TRUE(first.vertices[v] == rerolled.vertices[v]);
+			card_moved |= first.vertices[v] != releafed.vertices[v];
+		}
+	}
+	ASSERT_TRUE(block_moved);
+	ASSERT_TRUE(card_moved);
+}
+
+TEST(block_fill_short_chain_gets_one_block_at_its_midpoint)
+{
+	Tree tree = fixed_skeleton();
+	BlockFill fill = block_fill();
+	fill.density = 0.5f;
+	Mesh mesh = fill.mesh_tree(tree);
+
+	ASSERT_EQ(fill.block_count, 2);
+	ASSERT_TRUE(near(block_centre(mesh, 0), Vector3{0, 0, (TRUNK_LENGTH + TOP_LENGTH) / 2}));
+	ASSERT_TRUE(near(block_centre(mesh, 1), Vector3{TRUNK_RADIUS + TWIG_LENGTH / 2, 0, 1.0f}));
+	float trunk_length = (mesh.vertices[1] - mesh.vertices[0]).norm();
+	ASSERT_TRUE(std::abs(trunk_length - (TRUNK_LENGTH + TOP_LENGTH)) < 1e-5f);
+}
+
+TEST(block_fill_blocks_hinge_at_shared_axis_points)
+{
+	Tree tree;
+	Node trunk(Vector3{0, 0, 1}, Vector3{1, 0, 0}, 1.0f, 0.2f, 0);
+	Vector3 bent = Vector3{1, 0, 1}.normalized();
+	trunk.children.push_back(std::make_shared<NodeChild>(
+	    NodeChild{Node(bent, Vector3{1, 0, 0}, 1.0f, 0.1f, 0), 1.0f}));
+	tree.get_stems().push_back(Stem{trunk, Vector3{0, 0, 0}});
+
+	BlockFill fill = block_fill();
+	fill.density = 1.0f;
+	Mesh mesh = fill.mesh_tree(tree);
+	ASSERT_EQ(fill.block_count, 2);
+
+	auto face_centre = [&](int block, int k) {
+		Vector3 sum{0, 0, 0};
+		for (int i = 0; i < 2; i++)
+			for (int j = 0; j < 2; j++)
+				sum += mesh.vertices[(size_t)(block * VERTICES_PER_BLOCK + i * 4 + j * 2 + k)];
+		return Vector3(sum / 4.0f);
+	};
+
+	// TEST_POINT: blocks placed per segment separate at every bend; the tip
+	// face of one block and the base face of the next must meet on the axis.
+	ASSERT_TRUE(near(face_centre(0, 0), Vector3{0, 0, 0}));
+	ASSERT_TRUE(near(face_centre(0, 1), Vector3{0, 0, 1}));
+	ASSERT_TRUE(near(face_centre(1, 0), Vector3{0, 0, 1}));
+	ASSERT_TRUE(near(face_centre(1, 1), Vector3{0, 0, 1} + bent));
+}
+
+TEST(leaf_cards_append_to_a_manifold_mesh)
+{
+	Tree tree = fixed_skeleton();
+	ManifoldMesher mesher;
+	mesher.radial_resolution = 8;
+	mesher.smooth_iterations = 0;
+	Mesh mesh = mesher.mesh_tree(tree);
+	std::vector<Vector3> before = mesh.vertices;
+	size_t bark_polygons = mesh.polygons.size();
+
+	LeafCards cards = leaf_cards();
+	cards.append(tree, mesh);
+
+	int expected_cards = (int)std::lround(CARD_DENSITY * TWIG_LENGTH);
+	ASSERT_EQ(cards.card_count, expected_cards);
+	ASSERT_EQ((int)mesh.polygons.size(), (int)bark_polygons + expected_cards * 2);
+	ASSERT_EQ((int)mesh.vertices.size(), (int)before.size() + expected_cards * VERTICES_PER_CARD);
+	for (size_t v = 0; v < before.size(); v++)
+		ASSERT_TRUE(mesh.vertices[v] == before[v]);
+	for (size_t p = 0; p < mesh.polygons.size(); p++)
+		ASSERT_EQ(mesh.material_indices[p], p < bark_polygons ? 0 : 1);
+
+	for (const auto& [name, attribute] : mesh.attributes)
+	{
+		const auto* scalar = dynamic_cast<Attribute<float>*>(attribute.get());
+		const auto* vector = dynamic_cast<Attribute<Vector3>*>(attribute.get());
+		size_t size = scalar ? scalar->data.size() : vector->data.size();
+		ASSERT_EQ((int)size, (int)mesh.vertices.size());
+	}
+	const auto& attachment = vectors(mesh, "leaf_attachment");
+	for (size_t v = 0; v < before.size(); v++)
+		ASSERT_TRUE(attachment[v] == before[v]);
+}
+
+TEST(leaf_cards_need_size_and_density)
+{
+	for (int zeroed = 0; zeroed < 2; zeroed++)
+	{
+		Tree tree = fixed_skeleton();
+		LeafCards cards = leaf_cards();
+		if (zeroed == 0)
+			cards.card_size = 0.0f;
+		else
+			cards.density = 0.0f;
+		Mesh mesh = block_fill().mesh_tree(tree);
+		size_t polygons = mesh.polygons.size();
+		ASSERT_EQ(cards.count_polygons(tree), 0);
+		cards.append(tree, mesh);
+		ASSERT_EQ(cards.card_count, 0);
+		ASSERT_EQ((int)mesh.polygons.size(), (int)polygons);
 	}
 }
 

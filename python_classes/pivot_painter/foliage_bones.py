@@ -145,6 +145,20 @@ def _segment_count(extent: float, segments_per_chain: int) -> int:
     return max(1, int(segments_per_chain))
 
 
+def _own_segment_count(
+    chain: dict,
+    segments_per_chain: int,
+    branch_segments_per_chain: int | None,
+    rig_depth: int | None,
+) -> int:
+    if rig_depth is not None and chain["depth"] > rig_depth:
+        return 0
+    per_chain = segments_per_chain
+    if chain["depth"] > 0 and branch_segments_per_chain is not None:
+        per_chain = branch_segments_per_chain
+    return _segment_count(chain["extent"], per_chain)
+
+
 def build_bones(
     chains: dict[int, dict],
     parents: dict[int, int],
@@ -153,15 +167,22 @@ def build_bones(
     trunk_tip_stiffness: float = 0.6,
     branch_stiffness: float = 1.0,
     junction_falloff: float = JUNCTION_FALLOFF,
+    branch_segments_per_chain: int | None = None,
+    rig_depth: int | None = None,
 ) -> tuple[list[Bone], dict[int, list[int]]]:
     ordered = sorted(chains.values(), key=lambda chain: (chain["depth"], chain["stem_id"]))
+
+    def own_segments(chain):
+        return _own_segment_count(
+            chain, segments_per_chain, branch_segments_per_chain, rig_depth
+        )
 
     sample_radii: list[float] = []
     sample_positions: list[float] = []
     sample_depths: list[float] = []
 
     for chain in ordered:
-        count = _segment_count(chain["extent"], segments_per_chain)
+        count = own_segments(chain)
         for segment in range(count):
             sample_radii.append(chain["radius"])
             sample_positions.append(segment / count if count else 0.0)
@@ -182,10 +203,12 @@ def build_bones(
 
     sample_cursor = 0
 
+    rigged: set[int] = set()
+
     for chain in ordered:
         stem_id = chain["stem_id"]
         extent = chain["extent"]
-        count = _segment_count(extent, segments_per_chain)
+        count = own_segments(chain)
         segment_length = extent / count if count else extent
 
         parent_stem = parents.get(stem_id, -1)
@@ -195,15 +218,26 @@ def build_bones(
             parent_indices = chain_bones[parent_stem]
             parent_segments = len(parent_indices)
 
-            travelled = float((chain["pivot"] - parent_chain["pivot"]) @ parent_chain["direction"])
-            parent_segment_length = parent_chain["extent"] / parent_segments
-            parent_segment_length = max(parent_segment_length, 1e-9)
+            if parent_stem not in rigged:
+                parent_index = parent_indices[0]
+            else:
+                travelled = float(
+                    (chain["pivot"] - parent_chain["pivot"]) @ parent_chain["direction"]
+                )
+                parent_segment_length = parent_chain["extent"] / parent_segments
+                parent_segment_length = max(parent_segment_length, 1e-9)
 
-            segment_at_junction = int(travelled / parent_segment_length)
-            segment_at_junction = min(parent_segments - 1, max(0, segment_at_junction))
+                segment_at_junction = int(travelled / parent_segment_length)
+                segment_at_junction = min(parent_segments - 1, max(0, segment_at_junction))
 
-            parent_index = parent_indices[segment_at_junction]
+                parent_index = parent_indices[segment_at_junction]
 
+        if count == 0:
+            if parent_index >= 0:
+                chain_bones[stem_id] = [parent_index]
+            continue
+
+        rigged.add(stem_id)
         indices: list[int] = []
 
         for segment in range(count):
@@ -318,6 +352,8 @@ def build_rig(
     branch_stiffness: float = 1.0,
     junction_falloff: float = JUNCTION_FALLOFF,
     blend_band: float = BLEND_BAND,
+    branch_segments_per_chain: int | None = None,
+    rig_depth: int | None = None,
 ) -> BoneRig:
     chains = _chain_table(
         stem_ids, branch_extents, pivot_positions, directions, radii, hierarchy_depths
@@ -335,6 +371,8 @@ def build_rig(
         trunk_tip_stiffness=trunk_tip_stiffness,
         branch_stiffness=branch_stiffness,
         junction_falloff=junction_falloff,
+        branch_segments_per_chain=branch_segments_per_chain,
+        rig_depth=rig_depth,
     )
     index_a, index_b, weight_a = bind_vertices(
         vertex_positions, stem_ids, chains, chain_bones, blend_band=blend_band

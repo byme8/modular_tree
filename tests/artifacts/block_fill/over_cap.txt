@@ -1,0 +1,5 @@
+# a build over the polygon cap must not touch the object
+status: Error: Block Fill needs 422,352 polygons, over the cap of 1,000
+vertices unchanged: True
+rig unchanged: True
+modifiers unchanged: True

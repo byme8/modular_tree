@@ -1,6 +1,6 @@
 """Object lifecycle tests. These require a real bpy and cannot run in tier 1.
 
-Every generated tree owns its mesh, armature, morphs and vertex groups
+Every generated tree owns its mesh, armature, wind clips and vertex groups
 exclusively. The failures guarded here are silent: two assets sharing an
 armature still both look built, and an accumulated rig still renders — it just
 renders and exports wrong.
@@ -237,7 +237,7 @@ class TestGenerate:
 
         tree_obj = resolve_mesh_object(mesher.tree_object)
         assert tree_obj is not None and len(tree_obj.data.vertices) > 0
-        assert find_armature(tree_obj) is not None
+        assert find_armature(tree_obj) is not None, "rig on, but no armature built"
 
         mesher.build_bone_rig = False
         mesher.build_tree()
@@ -349,7 +349,7 @@ class TestNodeDraw:
         assert not any(e.startswith("label:UI error") for e in emitted), emitted
         assert "prop:preview_wind_angle" in emitted, emitted
         assert "prop:preview_wind_strength" in emitted, emitted
-        assert "op:Bake Wind Morphs" in emitted, emitted
+        assert "op:Bake Wind Clips" in emitted, emitted
 
     def test_draw_never_writes_id_data(self, node_tree):
         """Blender forbids writing ID data while drawing; doing so aborts the
@@ -379,90 +379,71 @@ class TestNodeDraw:
         )
 
 
-class TestWindMorphs:
-    """M20: poses that compound instead of starting from rest shred the mesh."""
+class TestWindClipOwnership:
 
-    @pytest.mark.parametrize("keep_armature", [False, True])
-    def test_morphs_do_not_accumulate(self, node_tree, keep_armature):
-        import numpy as np
-
+    @pytest.mark.parametrize("directions", [4, 8])
+    def test_clips_do_not_accumulate(self, node_tree, directions):
         from python_classes.pivot_painter.formats.foliage import FoliageExporter
-        from python_classes.pivot_painter.wind_morphs import (
-            MORPH_PREFIX,
-            bake_wind_morphs,
+        from python_classes.pivot_painter.wind_animation import (
+            action_prefix_for,
+            bake_wind_clips,
+            build_rig_for,
         )
 
         mesher = node_tree.mesher
         node_tree.add_branch()
 
-        obj = make_mesh_object(f"morph_{int(keep_armature)}")
+        obj = make_mesh_object(f"clips_{directions}")
         mesher.build_into(obj, 0)
         FoliageExporter(mesh=obj.data).export()
 
-        count, message = bake_wind_morphs(
-            obj,
-            directions=4,
-            segments_per_chain=mesher.segments_per_chain,
-            keep_armature=keep_armature,
-            **mesher._stiffness_settings(),
+        rig = build_rig_for(
+            obj.data, mesher.segments_per_chain, mesher._stiffness_settings()
         )
-        assert count == 4, message
 
-        keys = obj.data.shape_keys.key_blocks
-        base = np.array([v.co for v in keys["Basis"].data])
-        extent = float(np.linalg.norm(base.max(0) - base.min(0)))
+        for _ in range(2):
+            count, message = bake_wind_clips(obj, rig, directions=directions)
+            assert count == directions, message
 
-        offsets = []
-        for key in keys:
-            if not key.name.startswith(MORPH_PREFIX):
-                continue
-            posed = np.array([v.co for v in key.data])
-            offsets.append(float(np.linalg.norm(posed - base, axis=1).max()))
+        armature = find_armature(obj)
+        assert armature is not None, "the bake must leave the rig bound"
 
-        assert offsets, "no morphs written"
+        prefix = action_prefix_for(armature)
+        clips = [a for a in bpy.data.actions if a.name.startswith(prefix)]
+        assert len(clips) == directions, "rebaking accumulated clips"
 
-        # TEST_POINT: compounding shows up as a monotonic climb across
-        # directions, and as displacement far exceeding the tree itself.
-        assert max(offsets) < extent, f"offset {max(offsets):.2f} exceeds size {extent:.2f}"
-        assert max(offsets) < 3 * min(offsets), f"uneven across directions: {offsets}"
+    def test_two_trees_keep_separate_clips(self, node_tree):
+        from python_classes.pivot_painter.formats.foliage import FoliageExporter
+        from python_classes.pivot_painter.wind_animation import (
+            action_prefix_for,
+            bake_wind_clips,
+            build_rig_for,
+        )
 
-
-class TestArmatureVisibility:
-    """M19: hiding the rig must not stop it deforming the mesh."""
-
-    def test_hide_survives_rebuild_and_keeps_posing(self, node_tree):
         mesher = node_tree.mesher
-        mesher.build_bone_rig = True
-        mesher.tree_object = ""
-        mesher.build_tree()
+        node_tree.add_branch()
 
-        armature = mesher._get_armature()
-        assert armature is not None and not armature.hide_viewport
+        prefixes = []
+        for name in ("clip_owner_a", "clip_owner_b"):
+            obj = make_mesh_object(name)
+            mesher.build_into(obj, 0)
+            FoliageExporter(mesh=obj.data).export()
 
-        # TEST_POINT: pose the rig before hiding, so the comparison below
-        # isolates visibility rather than whether this tree bends at all.
-        mesher.preview_wind_strength = 1.0
-        visible_pose = [tuple(b.rotation_quaternion) for b in armature.pose.bones]
-        mesher.clear_pose_preview()
+            rig = build_rig_for(
+                obj.data, mesher.segments_per_chain, mesher._stiffness_settings()
+            )
+            bake_wind_clips(obj, rig, directions=4)
 
-        mesher.hide_armature = True
-        assert armature.hide_viewport
+            armature = find_armature(obj)
+            assert armature is not None
+            prefixes.append(action_prefix_for(armature))
 
-        mesher.preview_wind_strength = 1.0
-        hidden_pose = [tuple(b.rotation_quaternion) for b in armature.pose.bones]
-        assert hidden_pose == visible_pose, "hiding the rig changed the pose"
-
-        tree_obj = resolve_mesh_object(mesher.tree_object)
-        assert any(
-            modifier.type == "ARMATURE" for modifier in tree_obj.modifiers
-        ), "hidden rig lost its deform binding"
-
-        mesher.clear_pose_preview()
-        mesher.build_tree()
-        assert mesher._get_armature().hide_viewport, "rebuild lost the hidden state"
-
-        mesher.hide_armature = False
-        assert not mesher._get_armature().hide_viewport
+        # TEST_POINT: a shared action prefix is the same defect a shared
+        # armature name once was — the second bake silently overwrites the
+        # first tree's clips and both trees then animate identically.
+        assert prefixes[0] != prefixes[1]
+        for prefix in prefixes:
+            assert len([a for a in bpy.data.actions if a.name.startswith(prefix)]) == 4
 
 
 class TestDiagnostics:
@@ -523,7 +504,7 @@ class TestRigCache:
     """M14: a stale rig poses bones against topology that no longer exists."""
 
     def test_cache_invalidates(self, node_tree):
-        from python_classes.pivot_painter import wind_morphs
+        from python_classes.pivot_painter import wind_animation
         from python_classes.pivot_painter.formats.foliage import FoliageExporter
 
         mesher = node_tree.mesher
@@ -532,45 +513,58 @@ class TestRigCache:
         FoliageExporter(mesh=obj.data).export()
 
         stiffness = mesher._stiffness_settings()
-        wind_morphs.clear_rig_cache()
+        wind_animation.clear_rig_cache()
 
-        first = wind_morphs.build_rig_for(obj.data, 4, stiffness, use_cache=True)
-        assert wind_morphs.build_rig_for(obj.data, 4, stiffness, use_cache=True) is first
+        first = wind_animation.build_rig_for(obj.data, 4, stiffness, use_cache=True)
+        assert wind_animation.build_rig_for(obj.data, 4, stiffness, use_cache=True) is first
 
         softer = dict(stiffness, branch_stiffness=0.25)
-        assert wind_morphs.build_rig_for(obj.data, 4, softer, use_cache=True) is not first
+        assert wind_animation.build_rig_for(obj.data, 4, softer, use_cache=True) is not first
 
         assert (
-            wind_morphs.build_rig_for(obj.data, 4, stiffness, use_cache=False) is not first
+            wind_animation.build_rig_for(obj.data, 4, stiffness, use_cache=False)
+            is not first
         ), "bake paths must not read the cache"
 
         strip_rig(obj)
-        assert not wind_morphs._rig_cache, "strip_rig left a stale rig cached"
+        assert not wind_animation._rig_cache, "strip_rig left a stale rig cached"
 
 
 class TestExportPayload:
-    """M13: morph-safe writer settings must follow the objects, not selection."""
 
-    def test_morph_detection_ignores_selection(self, node_tree):
-        from python_classes.pivot_painter.wind_morphs import MORPH_PREFIX
+    def test_rig_detection_ignores_selection(self, node_tree):
+        from python_classes.pivot_painter.formats.foliage import FoliageExporter
+        from python_classes.pivot_painter.wind_animation import (
+            bake_wind_clips,
+            build_rig_for,
+        )
 
         tree = node_tree.tree
         export = tree.nodes.new("mt_MeshExportNode")
 
+        mesher = node_tree.mesher
+        node_tree.add_branch()
+
         plain = make_mesh_object("payload_plain")
-        morphed = make_mesh_object("payload_morphed")
-        morphed.shape_key_add(name="Basis", from_mix=False)
-        morphed.shape_key_add(name=f"{MORPH_PREFIX}000", from_mix=False)
+
+        rigged = make_mesh_object("payload_rigged")
+        mesher.build_into(rigged, 0)
+        FoliageExporter(mesh=rigged.data).export()
+        rig = build_rig_for(
+            rigged.data, mesher.segments_per_chain, mesher._stiffness_settings()
+        )
+        bake_wind_clips(rigged, rig, directions=4)
 
         for obj in bpy.context.scene.objects:
             obj.select_set(False)
         plain.select_set(True)
 
-        assert export._has_wind_morphs([morphed]) is True
-        assert export._has_wind_morphs([plain]) is False
-        assert export._has_wind_morphs([plain, morphed]) is True, (
-            "a batch containing morphs must use morph-safe settings for the whole file"
-        )
+        assert export._rigged_armatures([rigged]), "rigged tree reported no armature"
+        assert export._rigged_armatures([plain]) == []
+
+        # TEST_POINT: reading global selection instead of the passed objects
+        # would drop the rig from every file but one in a per-file batch.
+        assert export._rigged_armatures([plain, rigged])
 
         tree.nodes.remove(export)
 

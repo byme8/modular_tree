@@ -400,6 +400,52 @@ def compute_leaf_blade_position(
     return np.clip(distance / peak, 0.0, 1.0)
 
 
+def compute_leaf_vertex_mask(
+    vertex_count: int,
+    loop_vertices: NDArray[np.integer],
+    loop_starts: NDArray[np.integer],
+    loop_totals: NDArray[np.integer],
+    material_indices: NDArray[np.integer],
+    leaf_material: int = 1,
+) -> NDArray[np.bool_]:
+    mask = np.zeros(vertex_count, dtype=bool)
+    loops = np.asarray(loop_vertices, dtype=np.int64).ravel()
+    starts = np.asarray(loop_starts, dtype=np.int64).ravel()
+    totals = np.asarray(loop_totals, dtype=np.int64).ravel()
+    materials = np.asarray(material_indices, dtype=np.int64).ravel()
+
+    leaf_polygons = np.where(materials == leaf_material)[0]
+    if len(leaf_polygons) == 0:
+        return mask
+
+    loop_indices = np.concatenate(
+        [np.arange(starts[p], starts[p] + totals[p]) for p in leaf_polygons]
+    )
+    mask[loops[loop_indices]] = True
+    return mask
+
+
+def compute_card_blade_position(
+    vertex_positions: NDArray[np.floating],
+    attachment_points: NDArray[np.floating],
+) -> NDArray[np.floating]:
+    verts = np.asarray(vertex_positions, dtype=np.float64).reshape(-1, 3)
+    attachments = np.asarray(attachment_points, dtype=np.float64).reshape(-1, 3)
+
+    if len(verts) == 0:
+        return np.zeros(0, dtype=np.float64)
+
+    distance = np.linalg.norm(verts - attachments, axis=1)
+    _, card_of = np.unique(attachments, axis=0, return_inverse=True)
+    card_of = card_of.ravel()
+
+    peak = np.zeros(int(card_of.max()) + 1, dtype=np.float64)
+    np.maximum.at(peak, card_of, distance)
+    peak = np.maximum(peak, 1e-9)
+
+    return np.clip(distance / peak[card_of], 0.0, 1.0)
+
+
 def compute_leaf_colors(
     blade_position: NDArray[np.floating],
     occlusion_base: float = 0.5,
@@ -482,12 +528,15 @@ def compute_all_streams(
     trunk_tip_stiffness: float = 1.0,
     branch_stiffness: float = 1.0,
     junction_falloff: float = JUNCTION_FALLOFF,
+    leaf_mask: NDArray[np.bool_] | None = None,
+    leaf_attachments: NDArray[np.floating] | None = None,
 ) -> dict:
     """Compute every foliage vertex stream from mesher attributes.
 
     This shades **wood**. Translucency defaults to zero because trunks and
-    branches are opaque; leaves are a separate mesh and use
-    ``compute_leaf_colors``.
+    branches are opaque; vertices under ``leaf_mask`` are leaf cards baked into
+    the same mesh and take ``compute_leaf_colors`` instead, with the blade
+    position measured from ``leaf_attachments``.
 
     Args:
         vertex_positions: Nx3 array of vertex world positions.
@@ -523,16 +572,28 @@ def compute_all_streams(
     )
     phase = compute_phase(stem_ids)
     blade_height = compute_blade_height(branch_extents)
+    colors = compute_foliage_colors(along_branch, occlusion_base, translucency_tip, normal_blend)
+
+    leaf_blade = np.zeros(len(along_branch), dtype=np.float64)
+    if leaf_mask is not None and leaf_attachments is not None:
+        mask = np.asarray(leaf_mask, dtype=bool).ravel()
+        if np.any(mask):
+            verts = np.asarray(vertex_positions, dtype=np.float64).reshape(-1, 3)
+            attachments = np.asarray(leaf_attachments, dtype=np.float64).reshape(-1, 3)
+            leaf_blade[mask] = compute_card_blade_position(verts[mask], attachments[mask])
+            leaf_colors = compute_leaf_colors(leaf_blade[mask]).reshape(-1, 4)
+            colors = colors.reshape(-1, 4)
+            colors[mask] = leaf_colors
+            colors = colors.ravel()
 
     return {
         "along_branch": along_branch,
         "stiffness": stiffness,
         "phase": phase,
         "blade_height": blade_height,
+        "leaf_blade": leaf_blade,
         "wind_uv": pack_wind_uv(stiffness, phase),
         "height_uv": pack_height_uv(blade_height),
-        "colors": compute_foliage_colors(
-            along_branch, occlusion_base, translucency_tip, normal_blend
-        ),
+        "colors": colors,
         "bounds": compute_wind_expanded_bounds(vertex_positions, blade_height),
     }

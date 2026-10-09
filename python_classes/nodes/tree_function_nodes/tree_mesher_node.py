@@ -8,19 +8,24 @@ import bpy
 from ... import diagnostics
 from ...m_tree_wrapper import lazy_m_tree as m_tree
 from ...mesh_utils import create_mesh_from_cpp
-from ...pivot_painter.tree_asset import (
-    armature_name_for,
-    find_armature,
-    owning_collection,
-    resolve_mesh_object,
-    strip_rig,
-)
+from ...pivot_painter.tree_asset import find_armature, resolve_mesh_object, strip_rig
+from ...pivot_painter.wind_animation import STRENGTH_STOPS
 from ..base_types.node import MtreeNode
-from ..debounce import schedule_build
+from ..debounce import schedule_build, schedule_preview
+from ..surface_nodes.linking import (
+    BLOCK_FILL_ID,
+    LEAF_CARDS_ID,
+    acting_surface_node,
+    linked_surface_nodes,
+)
 
 
 def on_update_prop(node, context):
     schedule_build(node)
+
+
+def on_update_preview(node, context):
+    schedule_preview(node, "apply_pose_preview")
 
 
 class TreeMesherNode(bpy.types.Node, MtreeNode):
@@ -42,10 +47,10 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
     build_bone_rig: bpy.props.BoolProperty(
         name="Build Bone Rig",
         description=(
-            "Build a bone rig on generate and bind the mesh to an armature, so "
-            "the tree can be posed in the viewport and travels rigged into the "
-            "export. Bones compose rotations down the hierarchy, so a branch "
-            "follows the trunk's lean instead of shearing against it"
+            "Build the bone chains wind is computed from, so the tree can be "
+            "baked to wind morphs and travels rigged into the export. Bones "
+            "compose rotations down the hierarchy, so a branch follows the "
+            "trunk's lean instead of shearing against it"
         ),
         default=False,
     )
@@ -64,9 +69,9 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
     morph_directions: bpy.props.IntProperty(
         name="Wind Directions",
         description=(
-            "How many compass directions to bake a wind pose for. The runtime "
-            "blends the two nearest, which cuts the corner between them, so more "
-            "directions bend more accurately at one vertex buffer each"
+            "How many compass directions to bake a wind clip for. The engine "
+            "blends the two nearest, which cuts the corner between them, so "
+            "more directions bend more accurately at one short clip each"
         ),
         default=8,
         min=2,
@@ -76,14 +81,14 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
     preview_wind_strength: bpy.props.FloatProperty(
         name="Wind Strength",
         description=(
-            "Pose the armature as if wind of this strength were blowing, using "
-            "the same stiffness curve the engine does. Preview only; it does "
-            "not change what is exported"
+            "Pose the rig as if wind of this strength were blowing. Preview "
+            "only; it runs the same solver the clips are baked from, so it "
+            "cannot disagree with what is exported"
         ),
         default=0.0,
         min=0.0,
         max=1.0,
-        update=lambda self, context: self.apply_pose_preview(),
+        update=on_update_preview,
     )
     preview_wind_angle: bpy.props.FloatProperty(
         name="Wind Angle",
@@ -91,17 +96,7 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
         default=0.0,
         min=0.0,
         max=360.0,
-        update=lambda self, context: self.apply_pose_preview(),
-    )
-
-    hide_armature: bpy.props.BoolProperty(
-        name="Hide Armature",
-        description=(
-            "Hide the rig in the viewport. It still poses the mesh and still "
-            "drives the wind preview; only its own bones stop being drawn"
-        ),
-        default=False,
-        update=lambda self, context: self.apply_armature_visibility(),
+        update=on_update_preview,
     )
 
     status_message: bpy.props.StringProperty(default="")
@@ -183,26 +178,41 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
             diagnostics.log("draw_rig: stop, build_bone_rig is off")
             return
 
-        segments = self.segments_per_chain
-        diagnostics.log("draw_rig: segments_per_chain=%s", segments)
+        from ...nodes.export_nodes.foliage_wind_node import (
+            describe_rig_layout,
+            find_foliage_wind_settings,
+        )
+
+        settings = find_foliage_wind_settings(self.get_node_tree())
+        diagnostics.log("draw_rig: segments_per_chain=%s", settings["segments_per_chain"])
 
         rig_box.label(
-            text=f"Bones per branch: {segments} (Foliage Wind)",
+            text=f"Bones: {describe_rig_layout(settings)} (Foliage Wind)",
             icon="INFO",
         )
-        if segments == 1:
+        if settings["segments_per_chain"] == 1:
             warning = rig_box.row()
-            warning.label(text="1 bone per branch bends nothing", icon="ERROR")
+            warning.label(text="1 trunk bone bends nothing", icon="ERROR")
 
-        has_armature = self._get_armature() is not None
-        diagnostics.log("draw_rig: has_armature=%s", has_armature)
+        clip_box = container.box()
+        clip_box.label(text="Wind Clips", icon="ACTION")
+        clip_box.prop(self, "morph_directions")
 
-        visibility_row = rig_box.row()
-        visibility_row.enabled = has_armature
-        visibility_row.prop(self, "hide_armature", icon="HIDE_ON")
+        baked = self._clip_count()
+        diagnostics.log("draw_rig: clip_count=%s", baked)
+        clip_box.label(
+            text=f"{baked} clips, {len(STRENGTH_STOPS)} strength stops", icon="INFO"
+        )
 
-        preview_column = rig_box.column()
-        preview_column.enabled = has_armature
+        bake_row = clip_box.row()
+        bake_row.enabled = self._has_valid_tree_object()
+        bake = bake_row.operator("mtree.node_function", text="Bake Wind Clips")
+        bake.node_tree_name = self.get_node_tree().name
+        bake.node_name = self.name
+        bake.function_name = "bake_wind_clips"
+
+        preview_column = clip_box.column()
+        preview_column.enabled = self._has_valid_tree_object()
         preview_column.prop(self, "preview_wind_strength", slider=True)
         preview_column.prop(self, "preview_wind_angle", slider=True)
 
@@ -211,36 +221,15 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
         reset.node_name = self.name
         reset.function_name = "clear_pose_preview"
 
-        if not has_armature:
-            hint = rig_box.row()
-            hint.label(text="Press Generate Tree to build the rig", icon="INFO")
-
-        diagnostics.log("draw_rig: preview controls drawn")
-
-        morph_box = container.box()
-        morph_box.label(text="Wind Morphs", icon="SHAPEKEY_DATA")
-        morph_box.prop(self, "morph_directions")
-
-        baked = self._morph_count()
-        diagnostics.log("draw_rig: morph_count=%s", baked)
-        morph_box.label(text=f"{baked} baked", icon="INFO")
-
-        bake_row = morph_box.row()
-        bake_row.enabled = has_armature
-        bake = bake_row.operator("mtree.node_function", text="Bake Wind Morphs")
-        bake.node_tree_name = self.get_node_tree().name
-        bake.node_name = self.name
-        bake.function_name = "bake_wind_morphs"
-
         diagnostics.log("draw_rig: complete")
 
-    def _morph_count(self):
-        from ...pivot_painter.wind_morphs import count_wind_morphs
+    def _clip_count(self):
+        from ...pivot_painter.wind_animation import count_wind_clips
 
         tree_obj = resolve_mesh_object(self.tree_object)
         if tree_obj is None:
             return 0
-        return count_wind_morphs(tree_obj)
+        return count_wind_clips(tree_obj)
 
     def _draw_generate_button(self, container):
         props = container.operator("mtree.node_function", text="Generate Tree")
@@ -268,6 +257,9 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
         Blender forbids writing to ID data while drawing. The exception aborts
         the whole node's draw, hiding every panel below this one.
         """
+        if acting_surface_node(self, LEAF_CARDS_ID) is not None:
+            return
+
         tree_obj = resolve_mesh_object(self.tree_object)
         if tree_obj is None or not tree_obj.users_collection:
             return
@@ -315,12 +307,28 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
                     polys=len(cpp_mesh.get_polygons()),
                 )
 
+            block_fill = acting_surface_node(self, BLOCK_FILL_ID)
+            leaf_cards = acting_surface_node(self, LEAF_CARDS_ID)
+            surface_acted = block_fill is not None or leaf_cards is not None
+            if surface_acted:
+                cpp_mesh = self._apply_surface_nodes(
+                    tree, cpp_mesh, block_fill, leaf_cards, seed_offset
+                )
+
+            if leaf_cards is not None:
+                self._remove_leaves_modifier(obj)
+
             strip_rig(obj)
             if obj.data.shape_keys is not None:
                 obj.shape_key_clear()
             obj.data.clear_geometry()
 
-            create_mesh_from_cpp(obj.data, cpp_mesh)
+            create_mesh_from_cpp(
+                obj.data,
+                cpp_mesh,
+                flat_shading=surface_acted,
+                material_slots=2 if surface_acted else 0,
+            )
             diagnostics.log("  built %s", diagnostics.describe_mesh(obj.data))
 
             if len(obj.data.vertices) == 0:
@@ -384,14 +392,13 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
             self.status_message = f"Error: {str(e)}"
             self.status_is_error = True
 
-    def _get_armature(self):
-        tree_obj = resolve_mesh_object(self.tree_object)
-        if tree_obj is None:
-            return None
-        return find_armature(tree_obj)
-
     def _build_rig(self, tree_obj):
         from ...pivot_painter.formats.foliage_rig import FoliageRigExporter
+        from ...pivot_painter.wind_animation import (
+            bind_to_armature,
+            build_armature,
+            build_rig_for,
+        )
 
         with diagnostics.stage(
             "build_rig",
@@ -404,38 +411,48 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
                 mesh=tree_obj.data,
                 mesh_object=tree_obj,
                 segments_per_chain=self.segments_per_chain,
-                create_armature=True,
-                armature_name=armature_name_for(tree_obj),
-                collection=owning_collection(tree_obj),
                 **self._stiffness_settings(),
             ).export()
 
             rigging.record(success=result.success, message=result.message)
 
+            if result.success:
+                rig = build_rig_for(
+                    tree_obj.data,
+                    self.segments_per_chain,
+                    self._stiffness_settings(),
+                )
+                armature = build_armature(tree_obj, rig)
+                bind_to_armature(tree_obj, armature, rig)
+
         if not result.success:
             raise ValueError(f"Rig failed: {result.message}")
 
         self.preview_wind_strength = 0.0
-        self.apply_armature_visibility()
         return result.message
 
     def apply_pose_preview(self):
-        from ...pivot_painter.wind_morphs import apply_wind_pose
+        from ...pivot_painter.wind_animation import apply_pose, build_rig_for
 
-        armature = self._get_armature()
+        tree_obj = resolve_mesh_object(self.tree_object)
+        if tree_obj is None:
+            return
+
+        armature = find_armature(tree_obj)
         if armature is None:
             return
 
-        rig = self._current_rig()
-        if rig is None:
-            return
-
-        apply_wind_pose(
-            armature, rig, self.preview_wind_angle, self.preview_wind_strength
+        rig = build_rig_for(
+            tree_obj.data,
+            self.segments_per_chain,
+            self._stiffness_settings(),
+            use_cache=True,
         )
 
-    def bake_wind_morphs(self):
-        from ...pivot_painter.wind_morphs import bake_wind_morphs
+        apply_pose(armature, rig, self.preview_wind_angle, self.preview_wind_strength)
+
+    def bake_wind_clips(self):
+        from ...pivot_painter.wind_animation import bake_wind_clips, build_rig_for
 
         tree_obj = resolve_mesh_object(self.tree_object)
         if tree_obj is None:
@@ -443,82 +460,100 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
             self.status_is_error = True
             return
 
-        settings = self._stiffness_settings()
-        count, message = bake_wind_morphs(
-            tree_obj,
-            directions=self.morph_directions,
-            segments_per_chain=self.segments_per_chain,
-            keep_armature=True,
-            **settings,
-        )
+        with diagnostics.stage("bake_wind_clips", target=tree_obj.name) as baking:
+            rig = build_rig_for(
+                tree_obj.data, self.segments_per_chain, self._stiffness_settings()
+            )
+            count, message = bake_wind_clips(
+                tree_obj, rig, directions=self.morph_directions
+            )
+            baking.record(clips=count)
 
+        self.preview_wind_strength = 0.0
         self.status_message = message
         self.status_is_error = count == 0
 
-    def apply_armature_visibility(self):
-        """Toggle the rig's viewport visibility.
-
-        hide_viewport rather than hide_set: the latter is per-view-layer state
-        that a saved file or a second view layer will not carry. Neither stops
-        the armature deforming the mesh, so the wind preview keeps working
-        while the bones are hidden.
-        """
-        armature = self._get_armature()
-        if armature is None:
-            return
-
-        armature.hide_viewport = self.hide_armature
-
     def clear_pose_preview(self):
-        armature = self._get_armature()
-        if armature is None:
+        from ...pivot_painter.wind_animation import clear_pose
+
+        tree_obj = resolve_mesh_object(self.tree_object)
+        if tree_obj is None:
             return
 
-        for bone in armature.pose.bones:
-            bone.rotation_mode = "QUATERNION"
-            bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+        armature = find_armature(tree_obj)
+        if armature is not None:
+            clear_pose(armature)
 
         self.preview_wind_strength = 0.0
 
     def _stiffness_settings(self):
-        from ...nodes.export_nodes.foliage_wind_node import find_foliage_wind_settings
-
-        settings = find_foliage_wind_settings(self.get_node_tree())
-        return {
-            "trunk_base_stiffness": settings["trunk_base_stiffness"],
-            "trunk_tip_stiffness": settings["trunk_tip_stiffness"],
-            "branch_stiffness": settings["branch_stiffness"],
-            "junction_falloff": settings["junction_falloff"],
-        }
-
-    def _current_rig(self):
-        from ...pivot_painter.formats.foliage_rig import FoliageRigExporter
-        from ...pivot_painter.wind_morphs import build_rig_for
-
-        tree_obj = resolve_mesh_object(self.tree_object)
-        if tree_obj is None:
-            return None
-
-        probe = FoliageRigExporter(
-            mesh=tree_obj.data,
-            segments_per_chain=self.segments_per_chain,
-            create_armature=False,
+        from ...nodes.export_nodes.foliage_wind_node import (
+            find_foliage_wind_settings,
+            rig_settings,
         )
-        if probe.validate() is not None:
-            return None
 
-        return build_rig_for(
-            tree_obj.data,
-            self.segments_per_chain,
-            self._stiffness_settings(),
-            use_cache=True,
-        )
+        return rig_settings(find_foliage_wind_settings(self.get_node_tree()))
 
     def _mesh_tree(self, tree):
         mesher = m_tree.ManifoldMesher()
         mesher.radial_n_points = self.radial_resolution
         mesher.smooth_iterations = self.smoothness
         return mesher.mesh_tree(tree)
+
+    def _apply_surface_nodes(self, tree, cpp_mesh, block_fill, leaf_cards, seed_offset):
+        for node, kind in ((block_fill, BLOCK_FILL_ID), (leaf_cards, LEAF_CARDS_ID)):
+            if node is None:
+                continue
+            for ignored in linked_surface_nodes(self, kind)[1:]:
+                ignored.set_status(f"Ignored: {node.name} already acts on {self.name}", True)
+
+        blocks = None if block_fill is None else block_fill.native(seed_offset)
+        cards = None if leaf_cards is None else leaf_cards.native(seed_offset)
+
+        with diagnostics.stage(
+            "surface_nodes",
+            block_fill=None if block_fill is None else block_fill.name,
+            leaf_cards=None if leaf_cards is None else leaf_cards.name,
+        ) as stage:
+            polygons = 0
+            if blocks is not None:
+                polygons += blocks.count_polygons(tree)
+            if cards is not None:
+                polygons += cards.count_polygons(tree)
+
+            if block_fill is not None and polygons > block_fill.max_polygons:
+                message = (
+                    f"Block Fill needs {polygons:,} polygons, over the cap of "
+                    f"{block_fill.max_polygons:,}"
+                )
+                block_fill.set_status(f"Error: {message}", True)
+                raise ValueError(message)
+
+            if blocks is not None:
+                cpp_mesh = blocks.mesh_tree(tree)
+                stage.record(
+                    density=block_fill.density,
+                    scale=block_fill.scale,
+                    blocks=blocks.block_count,
+                    polygons=blocks.polygon_count,
+                )
+                block_fill.set_status(
+                    f"{blocks.block_count:,} blocks, {blocks.polygon_count:,} polygons"
+                )
+
+            if cards is not None:
+                cards.append(tree, cpp_mesh)
+                stage.record(cards=cards.card_count)
+                leaf_cards.set_status(f"{cards.card_count:,} cards")
+
+        return cpp_mesh
+
+    def _remove_leaves_modifier(self, obj):
+        from ...resources.node_groups import LEAVES_MODIFIER_NAME
+
+        modifier = obj.modifiers.get(LEAVES_MODIFIER_NAME)
+        if modifier is not None:
+            obj.modifiers.remove(modifier)
 
     def get_current_tree_object(self):
         """An object unlinked from every collection still exists in bpy.data, so

@@ -1,0 +1,7 @@
+bones present True
+clips 4/4
+
+export_tree_rig_Wind_000
+export_tree_rig_Wind_090
+export_tree_rig_Wind_180
+export_tree_rig_Wind_270

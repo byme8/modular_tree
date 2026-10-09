@@ -25,10 +25,11 @@ docstring or a longer name is the same violation, not a fix.
 ## Asset ownership
 
 Every generated tree — the mesher's preview tree and each variant alike — owns its
-mesh, armature, morphs and vertex groups exclusively. **Identity flows from the
+mesh, armature, wind clips and vertex groups exclusively. **Identity flows from the
 target object, never from a module-level constant.** `pivot_painter/tree_asset.py`
 owns this: `armature_name_for(obj)`, `find_armature(obj)`, `strip_rig(obj)`,
-`owning_collection(obj)`.
+`owning_collection(obj)`; `wind_animation.action_prefix_for(armature)` extends the
+same rule to actions.
 
 A shared constant like `ARMATURE_NAME = "MtreeRig"` means two assets alive at once
 write the same armature and clobber each other. That was the original bug; do not
@@ -104,22 +105,48 @@ Wrap new pipeline stages in `diagnostics.stage(...)` and log mesh state with
 `describe_mesh` — it reports what the rig reads (vertex count, attributes, stem count),
 not what the outliner shows.
 
-## Wind morphs
+## Wind clips
 
-The skeleton is a tool, not a deliverable. A bone rig is built so the tree's response
-to wind can be seen and evaluated at full strength; the resulting poses are baked to
-shape keys, and **the skeleton is then deliberately not exported** — hence
-`object_types={"MESH"}` for FBX and `export_skins=False` for glTF. Both are correct;
-do not "fix" them by shipping the armature.
+Wind ships as a skinned armature plus one animation clip per compass direction, and
+Unity blends them. `wind_animation.py` owns all of it. Shape keys were the previous
+delivery and are gone: `wind_morphs.py`, its tests and `tools/verify_morphs.py` were
+deleted rather than kept alongside, because two wind paths that must agree is exactly
+the defect described below.
 
-Morphs do constrain the writer, because each is a vertex-position delta against the
-base mesh. Anything that changes vertex count, order or position between bake and
-write invalidates every key: triangulation (`use_triangles`), modifier evaluation
-(`use_mesh_modifiers` / `export_apply`) and `bake_space_transform` are all disabled
-when morphs are present. That decision must come from the objects being written —
-`_has_wind_morphs(objects)` — never from `bpy.context.selected_objects`, which in
-per-file mode sees only the current object and would give two trees in one batch
-different axis handling.
+Each clip carries three keyframes at the strengths in `STRENGTH_STOPS` — 0.0, 0.25,
+1.0 — so the engine picks a point along the clip from wind power. Bending is rotation,
+so a straight lerp from rest to full cuts the chord across the arc and pulls branch
+tips inward; the error grows with the square of the rotation angle, which makes it
+worst on the compliant twigs and mildest on the stiff trunk. The 0.25 stop exists to
+put a keyframe where gentle wind actually sits. Adding stops is cheap here — three
+keyframes per bone — where under shape keys each stop cost a whole vertex buffer.
+
+The chain hierarchy is not optional. Stiffness is a scalar per vertex: it says how much
+a vertex resists wind, never what it rotates about. Only the chains make a twig inherit
+its parent limb's lean instead of shearing off it.
+
+**`apply_pose` must write `matrix_basis`, never `rotation_quaternion`.** `pose_rig`
+returns world matrices that rotate about each chain's pivot, which is not the bone head.
+A quaternion drops that pivot translation and is read in the bone's own rest basis
+rather than the parent's, so both the pivot and the basis come out wrong and the error
+compounds down the chain. That bug shipped: the viewport showed a tree that was never
+what exported. The correct form is
+`rest⁻¹ @ parent_world⁻¹ @ world @ rest`, and `matrix_basis` also sidesteps the
+ordering trap in `pose_bone.matrix`, which reads current parent state and so depends on
+assignment order down the chain. `tests/blender/test_wind_animation.py` holds this to
+1e-4 against `deform_vertices`; it currently lands at ~5e-6.
+
+Because the poses live on the armature, the writer constraints that shape keys forced
+are all lifted: triangulation, modifier evaluation and `bake_space_transform` no longer
+break anything, and `use_triangles=True` is what Unity wants anyway. What the writer
+does need is the armature itself — `object_types={"MESH", "ARMATURE"}`, `bake_anim`,
+`export_skins` — decided from `_rigged_armatures(objects)`, never from
+`bpy.context.selected_objects`, which in per-file mode sees only the current object and
+would drop the rig from every file but one.
+
+Actions are named `{armature_name}_Wind_{angle:03d}`, and the armature is named from
+the mesh. A shared prefix would make two trees alive at once overwrite each other's
+clips — the same defect a shared `ARMATURE_NAME` once was.
 
 ## Seeds and variants
 

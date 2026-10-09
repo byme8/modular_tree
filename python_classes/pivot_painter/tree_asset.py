@@ -20,15 +20,13 @@ def find_armature(obj: bpy.types.Object) -> bpy.types.Object | None:
 
 
 def strip_rig(obj: bpy.types.Object, remove_armature: bool = True) -> None:
-    """Return the object to an unrigged state.
-
-    remove_armature=False keeps the armature datablock alive. Removing objects
-    from bpy.data during a node-tree update crashes Blender, so callers that run
-    inside one unbind without deleting.
+    """Removing objects from bpy.data during a node-tree update crashes Blender,
+    so callers running inside one pass remove_armature=False to unbind without
+    deleting.
     """
     import bpy
 
-    from .wind_morphs import clear_rig_cache
+    from .wind_animation import clear_rig_cache, clear_wind_actions
 
     clear_rig_cache()
 
@@ -46,11 +44,14 @@ def strip_rig(obj: bpy.types.Object, remove_armature: bool = True) -> None:
     obj.vertex_groups.clear()
 
     armature = find_armature(obj)
-    if armature is not None and remove_armature:
-        armature_data = armature.data
-        bpy.data.objects.remove(armature, do_unlink=True)
-        if armature_data.users == 0:
-            bpy.data.armatures.remove(armature_data)
+    if armature is not None:
+        clear_wind_actions(armature)
+
+        if remove_armature:
+            armature_data = armature.data
+            bpy.data.objects.remove(armature, do_unlink=True)
+            if armature_data.users == 0:
+                bpy.data.armatures.remove(armature_data)
 
 
 def owning_collection(obj: bpy.types.Object) -> bpy.types.Collection:

@@ -80,14 +80,32 @@ class MTreeFoliageWind(bpy.types.Node, MtreeNode):
         default=False,
     )
     segments_per_chain: bpy.props.IntProperty(
-        name="Bones Per Branch",
+        name="Trunk Bones",
         description=(
-            "How many bones each branch chain bends through. One bone can only "
-            "move a branch rigidly, which reproduces the very problem the rig "
-            "solves; more bones bend more smoothly at proportional cost"
+            "How many bones the trunk bends through. One bone can only move it "
+            "rigidly, which reproduces the very problem the rig solves; more "
+            "bones bend more smoothly at proportional cost"
         ),
         default=4,
         min=1,
+        max=16,
+    )
+    branch_segments_per_chain: bpy.props.IntProperty(
+        name="Branch Bones",
+        description="Bones per rigged branch chain; one swings the branch rigidly about its base",
+        default=2,
+        min=1,
+        max=16,
+    )
+    rig_depth: bpy.props.IntProperty(
+        name="Rig Depth",
+        description=(
+            "Deepest branch level that gets bones of its own. Chains below it "
+            "are skinned to the bone of the limb they grow from, so twigs and "
+            "their leaves move as part of that limb"
+        ),
+        default=1,
+        min=0,
         max=16,
     )
 
@@ -143,10 +161,12 @@ class MTreeFoliageWind(bpy.types.Node, MtreeNode):
         delivery_box.prop(self, "use_bone_rig")
         if self.use_bone_rig:
             delivery_box.prop(self, "segments_per_chain")
+            delivery_box.prop(self, "branch_segments_per_chain")
+            delivery_box.prop(self, "rig_depth")
             if self.segments_per_chain == 1:
                 warning = delivery_box.row()
                 warning.label(
-                    text="1 bone per branch moves each branch rigidly",
+                    text="1 trunk bone moves the trunk rigidly",
                     icon="ERROR",
                 )
             # The engine picks the path by keyword, so a rigged mesh silently
@@ -177,6 +197,8 @@ class MTreeFoliageWind(bpy.types.Node, MtreeNode):
             "normal_blend": self.normal_blend,
             "build_bone_rig": self.use_bone_rig,
             "segments_per_chain": self.segments_per_chain,
+            "branch_segments_per_chain": self.branch_segments_per_chain,
+            "rig_depth": self.rig_depth,
         }
 
 
@@ -190,7 +212,30 @@ DEFAULT_FOLIAGE_SETTINGS = {
     "normal_blend": 0.0,
     "build_bone_rig": False,
     "segments_per_chain": 4,
+    "branch_segments_per_chain": 2,
+    "rig_depth": 1,
 }
+
+
+RIG_SETTING_KEYS = (
+    "trunk_base_stiffness",
+    "trunk_tip_stiffness",
+    "branch_stiffness",
+    "junction_falloff",
+    "branch_segments_per_chain",
+    "rig_depth",
+)
+
+
+def rig_settings(settings: dict) -> dict:
+    return {key: settings[key] for key in RIG_SETTING_KEYS}
+
+
+def describe_rig_layout(settings: dict) -> str:
+    return (
+        f"trunk {settings['segments_per_chain']}, branches "
+        f"{settings['branch_segments_per_chain']} to depth {settings['rig_depth']}"
+    )
 
 
 def find_foliage_wind_settings(node_tree) -> dict:

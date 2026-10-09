@@ -15,6 +15,8 @@
 #include "source/tree_functions/PipeRadiusFunction.hpp"
 #include "source/meshers/splines_mesher/BasicMesher.hpp"
 #include "source/meshers/manifold_mesher/ManifoldMesher.hpp"
+#include "source/meshers/block_fill/BlockFill.hpp"
+#include "source/meshers/block_fill/LeafCards.hpp"
 #include "source/leaf/LeafPresets.hpp"
 #include "source/leaf/LeafShapeGenerator.hpp"
 #include "source/leaf/LeafLODGenerator.hpp"
@@ -348,6 +350,18 @@ PYBIND11_MODULE(m_tree, m) {
                     }
                 }
                 return result;
+            })
+        .def("get_material_indices", [](const Mesh& mesh)
+            {
+                py::array_t<int> result(mesh.material_indices.size());
+                py::buffer_info buff = result.request();
+
+                int* ptr = (int*)buff.ptr;
+                for (int i = 0; i < mesh.material_indices.size(); i++)
+                {
+                    ptr[i] = mesh.material_indices[i];
+                }
+                return result;
             });
 
 
@@ -362,6 +376,28 @@ PYBIND11_MODULE(m_tree, m) {
         .def_readwrite("radial_n_points", &ManifoldMesher::radial_resolution)
         .def_readwrite("smooth_iterations", &ManifoldMesher::smooth_iterations)
         .def("mesh_tree", &ManifoldMesher::mesh_tree);
+
+    py::class_<BlockFill>(m, "BlockFill")
+        .def(py::init<>())
+        .def_readwrite("density", &BlockFill::density)
+        .def_readwrite("scale", &BlockFill::scale)
+        .def_readwrite("roll_variation_degrees", &BlockFill::roll_variation_degrees)
+        .def_readwrite("seed", &BlockFill::seed)
+        .def_readonly("block_count", &BlockFill::block_count)
+        .def_readonly("polygon_count", &BlockFill::polygon_count)
+        .def("count_polygons", &BlockFill::count_polygons)
+        .def("mesh_tree", &BlockFill::mesh_tree);
+
+    py::class_<LeafCards>(m, "LeafCards")
+        .def(py::init<>())
+        .def_readwrite("card_size", &LeafCards::card_size)
+        .def_readwrite("density", &LeafCards::density)
+        .def_readwrite("spread", &LeafCards::spread)
+        .def_readwrite("tilt_variation_degrees", &LeafCards::tilt_variation_degrees)
+        .def_readwrite("seed", &LeafCards::seed)
+        .def_readonly("card_count", &LeafCards::card_count)
+        .def("count_polygons", &LeafCards::count_polygons)
+        .def("append", &LeafCards::append);
 
 
 #ifdef VERSION_INFO

@@ -8,8 +8,19 @@ import bpy
 
 from ...pivot_painter.tree_asset import link_exclusively, resolve_mesh_object
 from ..base_types.node import MtreeNode
+from ..surface_nodes.linking import BLOCK_FILL_ID, LEAF_CARDS_ID, acting_surface_node
 
 SEED_STRIDE = 7919
+
+
+def mesh_summary(mesher) -> str:
+    block_fill = acting_surface_node(mesher, BLOCK_FILL_ID)
+    if block_fill is None:
+        return f"{mesher.radial_resolution} sides, smooth {mesher.smoothness}"
+    summary = f"Blocks, {block_fill.density:g}/m, scale {block_fill.scale:.2f}"
+    if acting_surface_node(mesher, LEAF_CARDS_ID) is not None:
+        summary += ", cards"
+    return summary
 
 
 class MTreeVariants(bpy.types.Node, MtreeNode):
@@ -126,14 +137,17 @@ class MTreeVariants(bpy.types.Node, MtreeNode):
         if mesher is None:
             mesh_box.label(text="Connect a Tree Mesher", icon="ERROR")
         else:
-            mesh_box.label(
-                text=f"{mesher.radial_resolution} sides, smooth {mesher.smoothness}",
-                icon="INFO",
-            )
+            mesh_box.label(text=mesh_summary(mesher), icon="INFO")
             if mesher.build_bone_rig:
-                mesh_box.label(
-                    text=f"Bone rig: {mesher.segments_per_chain} per branch", icon="INFO"
+                from ..export_nodes.foliage_wind_node import (
+                    describe_rig_layout,
+                    find_foliage_wind_settings,
                 )
+
+                rig_layout = describe_rig_layout(
+                    find_foliage_wind_settings(self.get_node_tree())
+                )
+                mesh_box.label(text=f"Bone rig: {rig_layout}", icon="INFO")
         mesh_box.prop(self, "bake_foliage_streams")
         if not self.bake_foliage_streams:
             warn = mesh_box.row()
@@ -141,7 +155,7 @@ class MTreeVariants(bpy.types.Node, MtreeNode):
             warn.label(text="Exports will carry geometry only", icon="ERROR")
 
         wind_box = layout.box()
-        wind_box.label(text="Wind Morphs", icon="SHAPEKEY_DATA")
+        wind_box.label(text="Wind Clips", icon="ACTION")
         wind_box.prop(self, "bake_morphs")
         if self.bake_morphs:
             wind_box.prop(self, "morph_directions")
@@ -229,23 +243,25 @@ class MTreeVariants(bpy.types.Node, MtreeNode):
         from ...pivot_painter.formats.foliage import FoliageExporter
 
         settings = dict(find_foliage_wind_settings(self.get_node_tree()))
-        settings.pop("build_bone_rig", False)
-        settings.pop("segments_per_chain", 4)
+        for key in (
+            "build_bone_rig",
+            "segments_per_chain",
+            "branch_segments_per_chain",
+            "rig_depth",
+        ):
+            settings.pop(key, None)
 
         FoliageExporter(mesh=mesh, **settings).export()
 
     def _bake_morphs(self, obj):
-        from ...nodes.export_nodes.foliage_wind_node import find_foliage_wind_settings
-        from ...pivot_painter.wind_morphs import bake_wind_morphs
+        from ...nodes.export_nodes.foliage_wind_node import (
+            find_foliage_wind_settings,
+            rig_settings,
+        )
+        from ...pivot_painter.wind_animation import bake_wind_clips, build_rig_for
 
         settings = find_foliage_wind_settings(self.get_node_tree())
 
-        return bake_wind_morphs(
-            obj,
-            directions=self.morph_directions,
-            segments_per_chain=settings["segments_per_chain"],
-            trunk_base_stiffness=settings["trunk_base_stiffness"],
-            trunk_tip_stiffness=settings["trunk_tip_stiffness"],
-            branch_stiffness=settings["branch_stiffness"],
-            junction_falloff=settings["junction_falloff"],
-        )
+        rig = build_rig_for(obj.data, settings["segments_per_chain"], rig_settings(settings))
+
+        return bake_wind_clips(obj, rig, directions=self.morph_directions)

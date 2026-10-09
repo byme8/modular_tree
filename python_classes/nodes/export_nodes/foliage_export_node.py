@@ -11,6 +11,11 @@ import bpy
 
 from ...pivot_painter.tree_asset import find_armature, resolve_mesh_object
 from ..base_types.node import MtreeNode
+from ..debounce import schedule_preview
+
+
+def on_update_preview(node, context):
+    schedule_preview(node, "apply_pose_preview")
 
 
 class MTreeFoliageExport(bpy.types.Node, MtreeNode):
@@ -19,27 +24,17 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
     bl_idname = "mt_FoliageExportNode"
     bl_label = "Foliage Export"
 
-    create_armature: bpy.props.BoolProperty(
-        name="Create Armature",
-        description=(
-            "Create a Blender armature from the rig and bind the mesh to it. "
-            "The engine reads the bone records and the binding stream, not this "
-            "armature, but without it the rig cannot be seen or posed"
-        ),
-        default=True,
-    )
-
     preview_wind_strength: bpy.props.FloatProperty(
         name="Wind Strength",
         description=(
-            "Pose the armature as if wind of this strength were blowing. Drives "
-            "the same stiffness curve the engine uses, so a branch that shears "
-            "away from its limb here will shear in the engine too"
+            "Blend the baked wind morphs as if wind of this strength were "
+            "blowing. These are the same shape keys the engine reads, so a "
+            "branch that shears away from its limb here will shear there too"
         ),
         default=0.0,
         min=0.0,
         max=1.0,
-        update=lambda self, context: self.apply_pose_preview(),
+        update=on_update_preview,
     )
     preview_wind_angle: bpy.props.FloatProperty(
         name="Wind Angle",
@@ -47,7 +42,7 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
         default=0.0,
         min=0.0,
         max=360.0,
-        update=lambda self, context: self.apply_pose_preview(),
+        update=on_update_preview,
     )
 
     status_message: bpy.props.StringProperty(default="")
@@ -63,7 +58,11 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
             icon = "ERROR" if self.status_is_error else "CHECKMARK"
             status_row.label(text=self.status_message, icon=icon)
 
-        from .foliage_wind_node import MTreeFoliageWind, find_foliage_wind_settings
+        from .foliage_wind_node import (
+            MTreeFoliageWind,
+            describe_rig_layout,
+            find_foliage_wind_settings,
+        )
 
         settings = find_foliage_wind_settings(self.get_node_tree())
 
@@ -76,23 +75,21 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
 
         if settings["build_bone_rig"]:
             rig_box = layout.box()
-            rig_box.label(text=f"Bone Rig: {settings['segments_per_chain']} per branch")
-            rig_box.prop(self, "create_armature")
+            rig_box.label(text=f"Bone Rig: {describe_rig_layout(settings)}")
 
-            if self.create_armature:
-                preview_box = layout.box()
-                preview_box.label(text="Pose Preview", icon="ARMATURE_DATA")
+            preview_box = layout.box()
+            preview_box.label(text="Wind Preview", icon="ARMATURE_DATA")
 
-                if self._get_armature() is None:
-                    preview_box.label(text="Bake first to create the rig", icon="INFO")
-                else:
-                    preview_box.prop(self, "preview_wind_strength", slider=True)
-                    preview_box.prop(self, "preview_wind_angle", slider=True)
+            if self._armature() is None:
+                preview_box.label(text="Generate the tree to build the rig", icon="INFO")
+            else:
+                preview_box.prop(self, "preview_wind_strength", slider=True)
+                preview_box.prop(self, "preview_wind_angle", slider=True)
 
-                    reset = preview_box.operator("mtree.node_function", text="Rest Pose")
-                    reset.node_tree_name = self.get_node_tree().name
-                    reset.node_name = self.name
-                    reset.function_name = "clear_pose_preview"
+                reset = preview_box.operator("mtree.node_function", text="Rest Pose")
+                reset.node_tree_name = self.get_node_tree().name
+                reset.node_name = self.name
+                reset.function_name = "clear_pose_preview"
 
         debug_box = layout.box()
         debug_box.label(text="Debug View")
@@ -116,66 +113,45 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
             return None
         return resolve_mesh_object(mesher.tree_object)
 
-    def _get_armature(self):
+    def _armature(self):
         obj = self._get_tree_object()
         if obj is None:
             return None
         return find_armature(obj)
 
     def clear_pose_preview(self):
-        armature = self._get_armature()
+        from ...pivot_painter.wind_animation import clear_pose
+
+        armature = self._armature()
         if armature is None:
             return
 
-        for bone in armature.pose.bones:
-            bone.rotation_mode = "QUATERNION"
-            bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+        clear_pose(armature)
 
         self.preview_wind_strength = 0.0
         self.status_message = "Rest pose"
         self.status_is_error = False
 
     def apply_pose_preview(self):
-        from ...pivot_painter.formats.foliage_rig import FoliageRigExporter
-        from ...pivot_painter.wind_morphs import apply_wind_pose, build_rig_for
+        from ...pivot_painter.wind_animation import apply_pose, build_rig_for
 
-        armature = self._get_armature()
         obj = self._get_tree_object()
-        if armature is None or obj is None:
+        armature = self._armature()
+        if obj is None or armature is None:
             return
 
-        from .foliage_wind_node import find_foliage_wind_settings
+        from .foliage_wind_node import find_foliage_wind_settings, rig_settings
 
         settings = find_foliage_wind_settings(self.get_node_tree())
-        if not settings["build_bone_rig"]:
-            return
-
-        probe = FoliageRigExporter(
-            mesh=obj.data,
-            segments_per_chain=settings["segments_per_chain"],
-            create_armature=False,
-        )
-        if probe.validate() is not None:
-            return
 
         rig = build_rig_for(
             obj.data,
             settings["segments_per_chain"],
-            {
-                key: settings[key]
-                for key in (
-                    "trunk_base_stiffness",
-                    "trunk_tip_stiffness",
-                    "branch_stiffness",
-                    "junction_falloff",
-                )
-            },
+            rig_settings(settings),
             use_cache=True,
         )
 
-        apply_wind_pose(
-            armature, rig, self.preview_wind_angle, self.preview_wind_strength
-        )
+        apply_pose(armature, rig, self.preview_wind_angle, self.preview_wind_strength)
 
     def do_export(self):
         self.status_message = ""
@@ -194,12 +170,11 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
         result = bpy.ops.mtree.export_foliage(
             "EXEC_DEFAULT",
             object_name=obj.name,
-            create_armature=self.create_armature,
             **settings,
         )
 
         if result == {"FINISHED"}:
-            if settings["build_bone_rig"] and self.create_armature:
+            if settings["build_bone_rig"] and self._armature() is not None:
                 self.preview_wind_strength = 0.0
                 self.status_message = "Baked. Drag Wind Strength to preview."
             else:

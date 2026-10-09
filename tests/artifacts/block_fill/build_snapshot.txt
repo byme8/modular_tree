@@ -1,0 +1,22 @@
+# block fill + leaf cards build of the fixture graph (trunk + sparse branch)
+polygons 6512 flat True
+material_slots 2 leaf_vertices 8960/14656
+block_fill status: 712 blocks, 4,272 polygons
+leaf_cards status: 1,120 cards
+
+   branch_extent n=14656   min=0.00200 max=14.33323 sha=e20421cd512dd648
+       direction n=14656   min=-0.99786 max=1.00000 sha=61db152a08744cbf
+ hierarchy_depth n=14656   min=0.00000 max=6.00000 sha=b25fdb6e0f266f17
+ leaf_attachment n=14656   min=-7.22339 max=13.76863 sha=77d51a8b03d088e8
+           loops n=26048   min=0.00000 max=14655.00000 sha=d60b17530adef12f
+  material_index n=6512    min=0.00000 max=1.00000 sha=05abb10625c62658
+phyllotaxis_angle n=14656   min=0.00000 max=6.20052 sha=c59dabd7343c7a6d
+  pivot_position n=14656   min=-6.01105 max=5.30264 sha=760a3789c600a313
+          radius n=14656   min=0.00271 max=0.30000 sha=d9fe2b2400d9de09
+         stem_id n=14656   min=0.00000 max=31.00000 sha=b45bb615fdfabd70
+              uv n=26048   min=0.00000 max=1.00000 sha=b172bc2d7b16b479
+        vertices n=14656   min=-7.35213 max=13.83369 sha=56ddfc678362b712
+
+# seed isolation
+block seed moves only block vertices: True
+leaf seed moves only card vertices: True

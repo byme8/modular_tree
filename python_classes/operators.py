@@ -12,11 +12,7 @@ from .m_tree_wrapper import lazy_m_tree as m_tree
 from .mesh_utils import create_mesh_from_cpp
 from .pivot_painter.formats.foliage import FoliageExporter
 from .pivot_painter.formats.foliage_rig import FoliageRigExporter
-from .pivot_painter.tree_asset import (
-    armature_name_for,
-    owning_collection,
-    strip_rig,
-)
+from .pivot_painter.tree_asset import strip_rig
 from .presets import (
     TREE_PRESETS,
     apply_preset,
@@ -312,16 +308,25 @@ class ExportFoliage(bpy.types.Operator):
         default=False,
     )
     segments_per_chain: bpy.props.IntProperty(
-        name="Bones Per Branch",
-        description="Bones each branch chain is split into; one moves it rigidly",
+        name="Trunk Bones",
+        description="Bones the trunk is split into; one moves it rigidly",
         default=4,
         min=1,
         max=16,
     )
-    create_armature: bpy.props.BoolProperty(
-        name="Create Armature",
-        description="Create a Blender armature mirroring the rig, for inspection",
-        default=True,
+    branch_segments_per_chain: bpy.props.IntProperty(
+        name="Branch Bones",
+        description="Bones per rigged branch chain; one swings it rigidly about its base",
+        default=2,
+        min=1,
+        max=16,
+    )
+    rig_depth: bpy.props.IntProperty(
+        name="Rig Depth",
+        description="Deepest branch level with bones of its own; deeper chains ride their limb's bone",
+        default=1,
+        min=0,
+        max=16,
     )
 
     def execute(self, context):
@@ -363,9 +368,8 @@ class ExportFoliage(bpy.types.Operator):
                 trunk_tip_stiffness=self.trunk_tip_stiffness,
                 branch_stiffness=self.branch_stiffness,
                 junction_falloff=self.junction_falloff,
-                create_armature=self.create_armature,
-                armature_name=armature_name_for(obj),
-                collection=owning_collection(obj),
+                branch_segments_per_chain=self.branch_segments_per_chain,
+                rig_depth=self.rig_depth,
             ).export()
 
             if not rig_result.success:
@@ -397,7 +401,8 @@ class ExportFoliage(bpy.types.Operator):
         rig_box.prop(self, "build_bone_rig")
         if self.build_bone_rig:
             rig_box.prop(self, "segments_per_chain")
-            rig_box.prop(self, "create_armature")
+            rig_box.prop(self, "branch_segments_per_chain")
+            rig_box.prop(self, "rig_depth")
 
 
 class GenerateLeaf(bpy.types.Operator):

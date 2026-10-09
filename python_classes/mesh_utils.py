@@ -23,22 +23,21 @@ FLOAT_ATTRIBUTES = [
 VECTOR3_ATTRIBUTES = [
     "direction",
     "pivot_position",
+    "leaf_attachment",
 ]
 
 
 def create_mesh_from_cpp(
     mesh: bpy.types.Mesh,
     cpp_mesh,
+    flat_shading: bool = False,
+    material_slots: int = 0,
 ) -> None:
-    """Populate a Blender mesh from C++ mesh data.
-
-    Args:
-        mesh: The Blender mesh to populate.
-        cpp_mesh: The C++ mesh object with vertex/polygon/attribute data.
-    """
-    _add_geometry(mesh, cpp_mesh)
+    _add_geometry(mesh, cpp_mesh, flat_shading)
     _add_attributes(mesh, cpp_mesh)
     _add_uvs(mesh, cpp_mesh)
+    while len(mesh.materials) < material_slots:
+        mesh.materials.append(None)
     mesh.update(calc_edges=True)
 
     # The debug overlay caches a GPU batch built from these attributes; without
@@ -48,23 +47,25 @@ def create_mesh_from_cpp(
     invalidate_debug_cache()
 
 
-def _add_geometry(mesh: bpy.types.Mesh, cpp_mesh) -> None:
-    """Add vertices and polygons to the mesh."""
+def _add_geometry(mesh: bpy.types.Mesh, cpp_mesh, flat_shading: bool = False) -> None:
     verts = cpp_mesh.get_vertices()
-    faces = np.copy(cpp_mesh.get_polygons()[::-1])  # Reverse to flip normals
+    faces = np.copy(cpp_mesh.get_polygons()[::-1])
+    materials = np.copy(cpp_mesh.get_material_indices()[::-1]).astype(np.int32)
 
-    mesh.vertices.add(len(verts) // 3)
+    mesh.vertices.add(int(len(verts) / 3))
     mesh.vertices.foreach_set("co", verts)
 
     mesh.loops.add(len(faces))
     mesh.loops.foreach_set("vertex_index", faces)
 
+    polygon_count = int(len(faces) / 4)
     loop_start = np.arange(0, len(faces), 4, dtype=np.int32)
-    loop_total = np.ones(len(faces) // 4, dtype=np.int32) * 4
-    mesh.polygons.add(len(faces) // 4)
+    loop_total = np.ones(polygon_count, dtype=np.int32) * 4
+    mesh.polygons.add(polygon_count)
     mesh.polygons.foreach_set("loop_start", loop_start)
     mesh.polygons.foreach_set("loop_total", loop_total)
-    mesh.polygons.foreach_set("use_smooth", np.ones(len(faces) // 4, dtype=bool))
+    mesh.polygons.foreach_set("use_smooth", np.full(polygon_count, not flat_shading, dtype=bool))
+    mesh.polygons.foreach_set("material_index", materials)
 
 
 def _add_attributes(mesh: bpy.types.Mesh, cpp_mesh) -> None:

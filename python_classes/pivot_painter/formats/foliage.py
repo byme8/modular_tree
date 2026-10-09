@@ -19,11 +19,13 @@ if TYPE_CHECKING:
     import bpy
 
 from .. import ExportResult
-from ..foliage_streams import compute_all_streams
+from ..foliage_streams import compute_all_streams, compute_leaf_vertex_mask
 
 # Attribute names produced by ManifoldMesher that the streams are derived from.
 SOURCE_FLOAT_ATTRIBUTES = ["stem_id", "branch_extent", "radius", "hierarchy_depth"]
 SOURCE_VECTOR_ATTRIBUTES = ["pivot_position", "direction"]
+LEAF_ATTACHMENT_ATTRIBUTE = "leaf_attachment"
+LEAF_MATERIAL_INDEX = 1
 
 
 class FoliageExporter:
@@ -74,6 +76,7 @@ class FoliageExporter:
             return validation_error
 
         source = self._read_source_attributes()
+        leaf_mask, leaf_attachments = self._read_leaf_cards(len(source["positions"]))
         streams = compute_all_streams(
             vertex_positions=source["positions"],
             stem_ids=source["stem_id"],
@@ -89,6 +92,8 @@ class FoliageExporter:
             trunk_tip_stiffness=self.trunk_tip_stiffness,
             branch_stiffness=self.branch_stiffness,
             junction_falloff=self.junction_falloff,
+            leaf_mask=leaf_mask,
+            leaf_attachments=leaf_attachments,
         )
 
         # Slot 0 is the mesher's bark parameterisation, which the base map is
@@ -140,6 +145,30 @@ class FoliageExporter:
             source[name] = vectors
 
         return source
+
+    def _read_leaf_cards(self, num_verts: int) -> tuple[np.ndarray | None, np.ndarray | None]:
+        if LEAF_ATTACHMENT_ATTRIBUTE not in self.mesh.attributes:
+            return None, None
+
+        polygon_count = len(self.mesh.polygons)
+        materials = np.zeros(polygon_count, dtype=np.int32)
+        self.mesh.polygons.foreach_get("material_index", materials)
+        if not np.any(materials == LEAF_MATERIAL_INDEX):
+            return None, None
+
+        starts = np.zeros(polygon_count, dtype=np.int32)
+        totals = np.zeros(polygon_count, dtype=np.int32)
+        self.mesh.polygons.foreach_get("loop_start", starts)
+        self.mesh.polygons.foreach_get("loop_total", totals)
+        loops = np.zeros(len(self.mesh.loops), dtype=np.int32)
+        self.mesh.loops.foreach_get("vertex_index", loops)
+
+        mask = compute_leaf_vertex_mask(
+            num_verts, loops, starts, totals, materials, LEAF_MATERIAL_INDEX
+        )
+        attachments = np.zeros((num_verts, 3))
+        self._read_attribute(LEAF_ATTACHMENT_ATTRIBUTE, attachments, num_verts, is_vector=True)
+        return mask, attachments
 
     def _read_attribute(
         self,

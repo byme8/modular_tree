@@ -24,6 +24,7 @@ class Mesh
 	std::vector<Vector2> uvs;
 	std::vector<std::array<int, 4>> polygons;
 	std::vector<std::array<int, 4>> uv_loops;
+	std::vector<int> material_indices;
 	std::map<std::string, std::shared_ptr<AbstractAttribute>> attributes;
 
 	Mesh() {};

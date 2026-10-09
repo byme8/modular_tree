@@ -15,7 +15,7 @@ WIND_NODE = (
 )
 ARTIFACT_DIR = Path(__file__).parent.parent / "artifacts" / "foliage_streams"
 
-RIG_ONLY_KEYS = {"build_bone_rig", "segments_per_chain"}
+RIG_ONLY_KEYS = {"build_bone_rig", "segments_per_chain", "branch_segments_per_chain", "rig_depth"}
 
 
 def authored_settings() -> dict:

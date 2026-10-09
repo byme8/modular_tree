@@ -9,6 +9,7 @@ from . import (
     node_categories,
     properties,
     sockets,
+    surface_nodes,
     tree_function_nodes,
 )
 
@@ -34,6 +35,7 @@ def register():
     sockets.register()
     tree_function_nodes.register()
     export_nodes.register()
+    surface_nodes.register()
     properties.register()
     node_categories.register()
     debounce.register()
@@ -51,5 +53,6 @@ def unregister():
     base_types.unregister()
     sockets.unregister()
     properties.unregister()
+    surface_nodes.unregister()
     export_nodes.unregister()
     tree_function_nodes.unregister()

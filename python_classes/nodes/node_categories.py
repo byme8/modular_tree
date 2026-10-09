@@ -56,6 +56,14 @@ node_categories = [
         ],
     ),
     MTreeNodeCategory(
+        "Surface",
+        "Surface",
+        items=[
+            NodeItem("mt_BlockFillNode"),
+            NodeItem("mt_LeafCardsNode"),
+        ],
+    ),
+    MTreeNodeCategory(
         "Export",
         "Export",
         items=[

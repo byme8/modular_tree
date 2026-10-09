@@ -20,8 +20,6 @@ from ..foliage_bones import (
 SOURCE_FLOAT_ATTRIBUTES = ["stem_id", "branch_extent", "radius", "hierarchy_depth"]
 SOURCE_VECTOR_ATTRIBUTES = ["pivot_position", "direction"]
 
-MIN_DISPLAY_BONE_LENGTH = 1e-3
-
 
 class FoliageRigExporter:
 
@@ -34,24 +32,21 @@ class FoliageRigExporter:
         branch_stiffness: float = 1.0,
         junction_falloff: float = 0.6,
         blend_band: float = BLEND_BAND,
-        create_armature: bool = True,
-        armature_name: str = "MtreeFoliageRig",
         mesh_object: bpy.types.Object | None = None,
-        collection: bpy.types.Collection | None = None,
+        branch_segments_per_chain: int | None = None,
+        rig_depth: int | None = None,
     ):
         self.mesh = mesh
         self.mesh_object = mesh_object
-        self.collection = collection
         self.segments_per_chain = segments_per_chain
+        self.branch_segments_per_chain = branch_segments_per_chain
+        self.rig_depth = rig_depth
         self.trunk_base_stiffness = trunk_base_stiffness
         self.trunk_tip_stiffness = trunk_tip_stiffness
         self.branch_stiffness = branch_stiffness
         self.junction_falloff = junction_falloff
         self.blend_band = blend_band
-        self.create_armature = create_armature
-        self.armature_name = armature_name
         self.rig = None
-        self.armature_object = None
 
     def export(self) -> ExportResult:
         validation_error = self.validate()
@@ -74,6 +69,8 @@ class FoliageRigExporter:
             branch_stiffness=self.branch_stiffness,
             junction_falloff=self.junction_falloff,
             blend_band=self.blend_band,
+            branch_segments_per_chain=self.branch_segments_per_chain,
+            rig_depth=self.rig_depth,
         )
 
         if self.rig.bone_count == 0:
@@ -100,17 +97,6 @@ class FoliageRigExporter:
             f"Built rig: {self.rig.bone_count} bones, "
             f"max bind distance {error['max_distance']:.4f}m."
         )
-
-        if self.create_armature:
-            armature_object = self.build_armature()
-            self.armature_object = armature_object
-            message += f" Armature '{armature_object.name}' created."
-
-            if self.mesh_object is not None:
-                self.bind_to_armature(self.mesh_object, armature_object)
-                message += " Pose it in Pose Mode to preview the deformation."
-            else:
-                message += " No mesh object given, so it is not bound: posing it will do nothing."
 
         return ExportResult(success=True, message=message)
 
@@ -193,102 +179,3 @@ class FoliageRigExporter:
                     target[vert_idx] = loop_data[loop_idx]
                     has_value[vert_idx] = True
 
-    def build_armature(self) -> bpy.types.Object:
-        import bpy
-        from mathutils import Vector
-
-        armature_data = bpy.data.armatures.new(self.armature_name)
-        armature_object = bpy.data.objects.new(self.armature_name, armature_data)
-
-        collection = self.collection
-        if collection is None:
-            collection = bpy.context.scene.collection
-        collection.objects.link(armature_object)
-
-        previous_active = bpy.context.view_layer.objects.active
-        previous_mode = bpy.context.mode
-
-        if previous_active is not None and previous_active.mode != "OBJECT":
-            bpy.ops.object.mode_set(mode="OBJECT")
-
-        bpy.context.view_layer.objects.active = armature_object
-
-        try:
-            bpy.ops.object.mode_set(mode="EDIT")
-
-            edit_bones = []
-            for bone in self.rig.bones:
-                edit_bone = armature_data.edit_bones.new(
-                    f"stem{bone.stem_id}_seg{bone.segment}"
-                )
-
-                head = Vector(bone.rest_position.tolist())
-                length = max(bone.length, MIN_DISPLAY_BONE_LENGTH)
-                tail = head + Vector(bone.rest_direction.tolist()) * length
-
-                edit_bone.head = head
-                edit_bone.tail = tail
-                edit_bone.use_connect = False
-
-                edit_bones.append(edit_bone)
-
-            for index, bone in enumerate(self.rig.bones):
-                if bone.parent >= 0:
-                    edit_bones[index].parent = edit_bones[bone.parent]
-
-        finally:
-            if bpy.context.view_layer.objects.active is armature_object:
-                bpy.ops.object.mode_set(mode="OBJECT")
-            bpy.context.view_layer.objects.active = previous_active
-            if previous_active is not None and previous_mode.startswith("EDIT"):
-                bpy.ops.object.mode_set(mode="EDIT")
-
-        return armature_object
-
-    def bind_to_armature(
-        self,
-        mesh_object: bpy.types.Object,
-        armature_object: bpy.types.Object,
-    ) -> None:
-        self.write_vertex_groups(mesh_object)
-
-        modifier = next(
-            (m for m in mesh_object.modifiers if m.type == "ARMATURE"),
-            None,
-        )
-        if modifier is None:
-            modifier = mesh_object.modifiers.new(name="FoliageRig", type="ARMATURE")
-
-        modifier.object = armature_object
-        modifier.use_vertex_groups = True
-
-        armature_object.matrix_world = mesh_object.matrix_world.copy()
-        mesh_object.parent = armature_object
-        mesh_object.matrix_parent_inverse = armature_object.matrix_world.inverted()
-
-    def write_vertex_groups(self, mesh_object: bpy.types.Object) -> None:
-        for bone in self.rig.bones:
-            name = f"stem{bone.stem_id}_seg{bone.segment}"
-            if name not in mesh_object.vertex_groups:
-                mesh_object.vertex_groups.new(name=name)
-
-        for vertex in range(len(self.mesh.vertices)):
-            index_a = int(self.rig.bone_indices_a[vertex])
-            index_b = int(self.rig.bone_indices_b[vertex])
-            weight_a = float(self.rig.weights_a[vertex])
-
-            bone_a = self.rig.bones[index_a]
-            mesh_object.vertex_groups[f"stem{bone_a.stem_id}_seg{bone_a.segment}"].add(
-                [vertex], weight_a, "REPLACE"
-            )
-
-            if weight_a >= 1.0:
-                continue
-
-            bone_b = self.rig.bones[index_b]
-            group_b = f"stem{bone_b.stem_id}_seg{bone_b.segment}"
-
-            if index_b == index_a:
-                mesh_object.vertex_groups[group_b].add([vertex], 1.0, "REPLACE")
-            else:
-                mesh_object.vertex_groups[group_b].add([vertex], 1.0 - weight_a, "REPLACE")

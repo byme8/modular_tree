@@ -661,6 +661,104 @@ class TestTranslucency:
         assert np.all(np.isfinite(single))
         assert compute_leaf_blade_position(np.zeros((0, 3))).size == 0
 
+    def test_cards_in_the_tree_mesh_take_leaf_colors(self):
+        from foliage_streams import compute_leaf_vertex_mask
+
+        tree = make_synthetic_tree()
+        wood_count = len(tree["vertex_positions"])
+
+        twig_base = np.array([1.5, 0.0, 2.0])
+        twig_direction = np.array([0.0, 0.0, 1.0])
+        attachments = [twig_base + twig_direction * 0.2, twig_base + twig_direction * 0.6]
+        sizes = (0.2, 0.05)
+
+        card_positions, card_attachments = [], []
+        for attachment, size in zip(attachments, sizes, strict=True):
+            half = size / 2.0
+            centre = attachment + np.array([0.05, 0.0, 0.0])
+            for sx, sz in ((-1, -1), (-1, 1), (1, 1), (1, -1)):
+                card_positions.append(centre + np.array([0.0, sx * half, sz * half]))
+                card_attachments.append(attachment)
+            for sx, sz in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                card_positions.append(centre + np.array([sx * half, 0.0, sz * half]))
+                card_attachments.append(attachment)
+
+        card_count = len(card_positions)
+        arrays = {
+            "vertex_positions": np.vstack([tree["vertex_positions"], np.array(card_positions)]),
+            "stem_ids": np.concatenate([tree["stem_ids"], np.full(card_count, 3.0)]),
+            "branch_extents": np.concatenate([tree["branch_extents"], np.full(card_count, 0.8)]),
+            "radii": np.concatenate([tree["radii"], np.full(card_count, 0.05)]),
+            "pivot_positions": np.vstack(
+                [tree["pivot_positions"], np.tile(twig_base, (card_count, 1))]
+            ),
+            "directions": np.vstack([tree["directions"], np.tile(twig_direction, (card_count, 1))]),
+            "hierarchy_depths": np.concatenate(
+                [tree["hierarchy_depths"], np.full(card_count, 2.0)]
+            ),
+        }
+        total = wood_count + card_count
+
+        quads = int(card_count / 4)
+        loop_vertices = np.concatenate([np.arange(wood_count), np.arange(wood_count, total)])
+        loop_starts = np.concatenate([[0], wood_count + np.arange(quads) * 4])
+        loop_totals = np.concatenate([[wood_count], np.full(quads, 4)])
+        materials = np.concatenate([[0], np.ones(quads, dtype=int)])
+
+        mask = compute_leaf_vertex_mask(total, loop_vertices, loop_starts, loop_totals, materials)
+        assert mask.sum() == card_count and not mask[:wood_count].any()
+
+        leaf_attachments = np.vstack(
+            [arrays["vertex_positions"][:wood_count], np.array(card_attachments)]
+        )
+        plain = compute_all_streams(**arrays)
+        streams = compute_all_streams(**arrays, leaf_mask=mask, leaf_attachments=leaf_attachments)
+
+        wood_slice = slice(0, wood_count * 4)
+        assert np.array_equal(streams["colors"][wood_slice], plain["colors"][wood_slice])
+        assert np.array_equal(streams["stiffness"], plain["stiffness"])
+        assert np.array_equal(streams["phase"], plain["phase"])
+        assert np.array_equal(streams["wind_uv"], plain["wind_uv"])
+
+        colors = streams["colors"].reshape(-1, 4)[wood_count:]
+        blade = streams["leaf_blade"][wood_count:]
+        assert np.all(colors[:, 2] == 1.0)
+        assert colors[:, 1] == pytest.approx(blade)
+        assert colors[:, 3] == pytest.approx(blade)
+
+        # TEST_POINT: the second card is a quarter the size of the first; a
+        # mesh-wide normalisation would cap its blade position at 0.25.
+        for card in range(2):
+            per_card = blade[card * 8 : (card + 1) * 8]
+            assert per_card.max() == pytest.approx(1.0)
+            assert per_card.min() > 0.0
+
+        lines = [
+            "# leaf cards baked into the tree mesh: material-1 vertices take leaf colours",
+            f"# wood vertices {wood_count}, card vertices {card_count} on stem 3",
+            "",
+            f"{'vertex':>6} {'card':>4} {'blade':>10} {'r':>10} {'g':>10} {'b':>10} {'a':>10} "
+            f"{'stiffness':>10}",
+        ]
+        for i in range(card_count):
+            v = wood_count + i
+            lines.append(
+                f"{v:>6} {int(i / 8):>4} {_fmt(blade[i]):>10} {_fmt(colors[i, 0]):>10} "
+                f"{_fmt(colors[i, 1]):>10} {_fmt(colors[i, 2]):>10} {_fmt(colors[i, 3]):>10} "
+                f"{_fmt(streams['stiffness'][v]):>10}"
+            )
+        wood_unchanged = np.array_equal(streams["colors"][wood_slice], plain["colors"][wood_slice])
+        twig_stiffness = np.allclose(
+            streams["stiffness"][wood_count:], plain["stiffness"][wood_count:]
+        )
+        lines += [
+            "",
+            "# invariants",
+            f"wood colours unchanged by the mask: {wood_unchanged}",
+            f"card stiffness equals its twig's: {twig_stiffness}",
+        ]
+        write_artifact("card_streams.txt", lines)
+
     def test_wood_and_leaf_snapshot(self):
         """Record wood and leaf channel values side by side."""
         from foliage_streams import compute_leaf_blade_position, compute_leaf_colors

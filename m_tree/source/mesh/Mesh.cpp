@@ -25,6 +25,7 @@ int Mesh::add_polygon()
 {
 	polygons.emplace_back();
 	uv_loops.emplace_back();
+	material_indices.push_back(0);
 	return (int)polygons.size() - 1;
 }
 } // namespace Mtree

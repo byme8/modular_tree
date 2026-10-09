@@ -227,6 +227,65 @@ class TestTopology:
         write_artifact("topology.txt", lines)
 
 
+class TestRigDepth:
+
+    def test_chains_below_rig_depth_ride_their_ancestor_bone(self):
+        tree = make_synthetic_tree()
+        ids = tree["stem_ids"].astype(int)
+        positions = tree["vertex_positions"]
+
+        lines = [
+            "# rig depth sweep on the synthetic tree: stems 0 (depth 0), 1 and 2 (depth 1), 3 (depth 2 on stem 1)",
+            "# columns: rig_depth | bones | stem: own_bones attach_bone",
+        ]
+
+        # TEST_POINT: (rig_depth, expected bone count, unrigged stem -> bone it rides);
+        # stem 3 hangs 1.5m along stem 1, so it must ride stem 1's second bone
+        # at depth 1 and the trunk bone at z=2 at depth 0.
+        cases = [
+            (None, 10, {}),
+            (0, 4, {1: 2, 2: 3, 3: 2}),
+            (1, 8, {3: 5}),
+            (2, 10, {}),
+        ]
+
+        for rig_depth, expected_bones, riders in cases:
+            rig = build_rig(**tree, branch_segments_per_chain=2, rig_depth=rig_depth)
+
+            assert rig.bone_count == expected_bones, (rig_depth, rig.bone_count)
+            assert not validate_rig(rig)
+
+            per_stem = []
+            for stem in sorted(set(ids.tolist())):
+                mask = ids == stem
+                own = sum(1 for bone in rig.bones if bone.stem_id == stem)
+                bound = sorted(set(rig.bone_indices_a[mask].tolist()))
+                per_stem.append(f"{stem}: {own} {bound if own == 0 else '-'}")
+
+                if stem in riders:
+                    assert own == 0
+                    assert bound == [riders[stem]]
+                    assert np.all(rig.bone_indices_b[mask] == riders[stem])
+                    assert np.all(rig.weights_a[mask] == 1.0)
+                else:
+                    assert own > 0
+
+            lines.append(
+                f"{rig_depth} | {rig.bone_count} | " + " | ".join(per_stem)
+            )
+
+            matrices = pose_rig(rig, 0.0, 1.0)
+            posed = deform_vertices(rig, positions, matrices)
+            for stem, bone in riders.items():
+                mask = ids == stem
+                homogeneous = np.column_stack([positions[mask], np.ones(mask.sum())])
+                rigid = (matrices[bone] @ homogeneous.T).T[:, :3]
+                assert np.abs(posed[mask] - rigid).max() < 1e-9
+                assert np.abs(posed[mask] - positions[mask]).max() > 1e-3
+
+        write_artifact("rig_depth.txt", lines)
+
+
 class TestBinding:
 
     def test_every_vertex_binds_soundly(self):

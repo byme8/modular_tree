@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import contextlib
-import math
 import os
 
 import bpy
@@ -148,9 +147,16 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
             self.status_is_error = True
             return
 
+        rigged, bones, clips = self._describe_rig(objects)
+        rig_part = (
+            f"Rig: {rigged}/{len(objects)} rigged, {bones} bones, {clips} clips"
+            if rigged
+            else "Rig: none"
+        )
+
         self.payload_summary = (
             f"{len(objects)} obj | UV: {', '.join(uv_layers) or 'none'} | "
-            f"Colour: {', '.join(color_layers) or 'none'}"
+            f"Colour: {', '.join(color_layers) or 'none'} | {rig_part}"
         )
         self.status_message = ""
         self.status_is_error = False
@@ -164,6 +170,20 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
             uv_layers.update(layer.name for layer in mesh.uv_layers)
             color_layers.update(attr.name for attr in mesh.color_attributes)
         return sorted(uv_layers), sorted(color_layers)
+
+    def _describe_rig(self, objects):
+        from ...pivot_painter.tree_asset import find_armature
+        from ...pivot_painter.wind_animation import count_wind_clips
+
+        bones, clips, rigged = 0, 0, 0
+        for obj in objects:
+            armature = find_armature(obj)
+            if armature is None:
+                continue
+            rigged += 1
+            bones += len(armature.data.bones)
+            clips += count_wind_clips(obj)
+        return rigged, bones, clips
 
     def _gather_objects(self):
         if self.export_selection == "SELECTED":
@@ -187,6 +207,8 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         export_dir = bpy.path.abspath(self.export_path)
         os.makedirs(export_dir, exist_ok=True)
 
+        baked = self._ensure_wind_clips(objects)
+
         previous_selection = list(bpy.context.selected_objects)
         previous_active = bpy.context.view_layer.objects.active
 
@@ -199,9 +221,12 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
                 count = self._export_combined(objects, export_dir)
 
             uv_layers, color_layers = self._describe_payload(objects)
+            rigged, bones, clips = self._describe_rig(objects)
+            rig_part = f", {bones} bones, {clips} clips" if rigged else ", no rig"
             self.status_message = (
                 f"Exported {count} file(s): {len(uv_layers)} UV, "
-                f"{len(color_layers)} colour layer(s)"
+                f"{len(color_layers)} colour layer(s){rig_part}"
+                + (f" (baked {baked})" if baked else "")
             )
             self.status_is_error = False
 
@@ -216,109 +241,95 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
                     obj.select_set(True)
             bpy.context.view_layer.objects.active = previous_active
 
+    def _find_mesher(self):
+        for node in self.get_node_tree().nodes:
+            if node.bl_idname == "mt_MesherNode":
+                return node
+        return None
+
+    def _ensure_wind_clips(self, objects):
+        from ...pivot_painter.tree_asset import find_armature
+        from ...pivot_painter.wind_animation import (
+            bake_wind_clips,
+            build_rig_for,
+            count_wind_clips,
+        )
+        from .foliage_wind_node import find_foliage_wind_settings
+
+        settings = find_foliage_wind_settings(self.get_node_tree())
+        if not settings["build_bone_rig"]:
+            return 0
+
+        mesher = self._find_mesher()
+        if mesher is None:
+            return 0
+
+        wanted = mesher.morph_directions
+        baked = 0
+
+        for obj in objects:
+            if not isinstance(obj.data, bpy.types.Mesh):
+                continue
+            if "stem_id" not in obj.data.attributes:
+                continue
+            if find_armature(obj) is not None and count_wind_clips(obj) == wanted:
+                continue
+
+            rig = build_rig_for(
+                obj.data, mesher.segments_per_chain, mesher._stiffness_settings()
+            )
+            count, _ = bake_wind_clips(obj, rig, directions=wanted)
+            baked += count
+
+        return baked
+
     def _select_only(self, objects):
         bpy.ops.object.select_all(action="DESELECT")
         for obj in objects:
             obj.select_set(True)
         bpy.context.view_layer.objects.active = objects[0] if objects else None
 
-    def _has_wind_morphs(self, objects):
-        """Decide from the objects being written, not the current selection.
+    def _rigged_armatures(self, objects):
+        from ...pivot_painter.tree_asset import find_armature
 
-        Morph targets are baked from a temporary skeleton and the skeleton is
-        deliberately not exported, but they constrain the writer: triangulation
-        and modifier evaluation both break shape-key vertex correspondence, and
-        bake_space_transform moves vertices the keys were computed against. A
-        batch that read global selection state would decide this per file and
-        land morph-carrying trees on different axes than plain ones.
-        """
-        from ...pivot_painter.wind_morphs import count_wind_morphs
+        armatures = []
+        for obj in objects:
+            if obj.type != "MESH":
+                continue
+            armature = find_armature(obj)
+            if armature is not None and armature not in armatures:
+                armatures.append(armature)
 
-        return any(
-            obj.type == "MESH" and count_wind_morphs(obj) for obj in objects
-        )
-
-    @contextlib.contextmanager
-    def _axis_converted(self, objects, axes):
-        from mathutils import Matrix
-
-        if axes["axis_up"] != "Y" or not self._has_wind_morphs(objects):
-            yield objects
-            return
-
-        rotation = Matrix.Rotation(math.radians(-90.0), 4, "X")
-        copies = []
-
-        try:
-            for obj in objects:
-                copy = obj.copy()
-                copy.data = obj.data.copy()
-                target = (
-                    obj.users_collection[0]
-                    if obj.users_collection
-                    else bpy.context.scene.collection
-                )
-                target.objects.link(copy)
-                copies.append(copy)
-
-                self._rotate_mesh_and_keys(copy.data, rotation)
-
-            self._select_only(copies)
-            yield copies
-
-        finally:
-            for copy in copies:
-                data = copy.data
-                bpy.data.objects.remove(copy, do_unlink=True)
-                if data.users == 0:
-                    bpy.data.meshes.remove(data)
-
-    def _rotate_mesh_and_keys(self, mesh, rotation):
-        import numpy as np
-
-        matrix = np.array(rotation.to_3x3())
-
-        def spin(collection, count):
-            flat = np.empty(count * 3, dtype=np.float32)
-            collection.foreach_get("co", flat)
-            turned = flat.reshape(-1, 3) @ matrix.T
-            collection.foreach_set("co", np.ascontiguousarray(turned, dtype=np.float32).ravel())
-
-        vertex_count = len(mesh.vertices)
-        spin(mesh.vertices, vertex_count)
-
-        if mesh.shape_keys is not None:
-            for key in mesh.shape_keys.key_blocks:
-                spin(key.data, vertex_count)
-
-        mesh.update()
+        return armatures
 
     def _write_file(self, filepath, objects):
         axes = ENGINE_AXES[self.target_engine]
+        armatures = self._rigged_armatures(objects)
 
-        with self._axis_converted(objects, axes) as writable:
-            converted = writable is not objects
-            self._write_selection(filepath, writable, axes, converted)
+        if armatures:
+            self._select_only(list(objects) + armatures)
 
-    def _write_selection(self, filepath, objects, axes, pre_rotated):
-        morphs = self._has_wind_morphs(objects)
-        if pre_rotated:
-            axes = {"axis_up": "Z", "axis_forward": "-Y"}
+        self._write_selection(filepath, objects, axes, bool(armatures))
 
+    def _write_selection(self, filepath, objects, axes, rigged):
         if self.export_format == "FBX":
             bpy.ops.export_scene.fbx(
                 filepath=filepath,
                 use_selection=True,
                 apply_unit_scale=True,
-                bake_space_transform=not morphs,
+                bake_space_transform=False,
                 apply_scale_options="FBX_SCALE_ALL",
                 mesh_smooth_type="FACE",
-                object_types={"MESH"},
-                bake_anim=False,
-                use_mesh_modifiers=self.apply_modifiers and not morphs,
+                object_types={"MESH", "ARMATURE"} if rigged else {"MESH"},
+                bake_anim=rigged,
+                bake_anim_use_all_actions=rigged,
+                bake_anim_use_nla_strips=False,
+                bake_anim_simplify_factor=0.0,
+                add_leaf_bones=False,
+                use_mesh_modifiers=self.apply_modifiers,
                 colors_type="LINEAR",
                 prioritize_active_color=True,
-                use_triangles=not morphs,
+                use_triangles=True,
                 use_custom_props=True,
                 axis_up=axes["axis_up"],
                 axis_forward=axes["axis_forward"],
@@ -328,9 +339,10 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
                 filepath=filepath,
                 use_selection=True,
                 export_yup=(axes["axis_up"] == "Y"),
-                export_apply=self.apply_modifiers and not morphs,
-                export_morph=True,
-                export_skins=False,
+                export_apply=self.apply_modifiers,
+                export_morph=False,
+                export_skins=rigged,
+                export_animations=rigged,
                 export_texcoords=True,
                 export_normals=True,
                 export_all_vertex_colors=True,
