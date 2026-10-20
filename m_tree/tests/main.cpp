@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -1262,6 +1263,94 @@ TEST(leaf_cards_need_size_and_density)
 		ASSERT_EQ(cards.card_count, 0);
 		ASSERT_EQ((int)mesh.polygons.size(), (int)polygons);
 	}
+}
+
+TEST(leaf_card_lods_nest_and_keep_the_area)
+{
+	Tree tree = fixed_skeleton();
+	LeafCards cards = leaf_cards();
+	cards.density = 400.0f;
+
+	Mesh full = block_fill().mesh_tree(tree);
+	size_t bark_vertices = full.vertices.size();
+	cards.append(tree, full);
+	int total = cards.card_count;
+	ASSERT_GT(total, 10);
+
+	Mesh explicit_full = block_fill().mesh_tree(tree);
+	cards.append(tree, explicit_full, 1.0f);
+	ASSERT_TRUE(explicit_full.vertices == full.vertices);
+
+	std::vector<int> lod1 = cards.lod_cards(tree, 0.5f);
+	std::vector<int> lod2 = cards.lod_cards(tree, 0.2f);
+	ASSERT_EQ((int)lod1.size(), (int)std::lround(0.5f * (float)total));
+	ASSERT_EQ((int)lod2.size(), (int)std::lround(0.2f * (float)total));
+	for (int card : lod2)
+		ASSERT_TRUE(std::find(lod1.begin(), lod1.end(), card) != lod1.end());
+	ASSERT_TRUE(cards.lod_cards(tree, 0.2f) == lod2);
+
+	Mesh coarse = block_fill().mesh_tree(tree);
+	cards.append(tree, coarse, 0.2f);
+	ASSERT_EQ(cards.card_count, (int)lod2.size());
+	ASSERT_EQ((int)coarse.vertices.size(), (int)(bark_vertices + lod2.size() * VERTICES_PER_CARD));
+	for (size_t v = 0; v < bark_vertices; v++)
+		ASSERT_TRUE(coarse.vertices[v] == full.vertices[v]);
+
+	auto card_centre = [&](const Mesh& mesh, size_t card) {
+		Vector3 sum{0, 0, 0};
+		for (int v = 0; v < VERTICES_PER_CARD; v++)
+			sum += mesh.vertices[bark_vertices + card * VERTICES_PER_CARD + (size_t)v];
+		return Vector3(sum / (float)VERTICES_PER_CARD);
+	};
+	auto card_side = [&](const Mesh& mesh, size_t card) {
+		size_t first = bark_vertices + card * VERTICES_PER_CARD;
+		return (mesh.vertices[first + 1] - mesh.vertices[first]).norm();
+	};
+
+	float area_full = 0.0f;
+	for (size_t card = 0; card < (size_t)total; card++)
+		area_full += card_side(full, card) * card_side(full, card);
+	float area_coarse = 0.0f;
+	for (size_t rank = 0; rank < lod2.size(); rank++)
+	{
+		ASSERT_TRUE(near(card_centre(coarse, rank), card_centre(full, (size_t)lod2[rank]), 1e-4f));
+		area_coarse += card_side(coarse, rank) * card_side(coarse, rank);
+	}
+	ASSERT_TRUE(std::abs(area_coarse / area_full - 1.0f) < 0.05f);
+
+	std::vector<float> exposure = cards.card_exposure(tree);
+	float least_kept = 1.0f;
+	for (int card : lod2)
+		least_kept = std::min(least_kept, exposure[(size_t)card]);
+	for (int card = 0; card < total; card++)
+		if (std::find(lod2.begin(), lod2.end(), card) == lod2.end())
+			ASSERT_LE(exposure[(size_t)card], least_kept);
+}
+
+TEST(sky_exposure_darkens_inside_a_canopy)
+{
+	std::vector<Vector3> canopy;
+	for (int x = -5; x <= 5; x++)
+		for (int y = -5; y <= 5; y++)
+			for (int z = -5; z <= 5; z++)
+				canopy.emplace_back(0.2f * x, 0.2f * y, 2.0f + 0.2f * z);
+	std::vector<double> areas(canopy.size(), 0.08);
+
+	std::vector<Vector3> probes = {{0, 0, 2}, {0, 0, 2.95f}, {0, 0, 0}, {3, 0, 2}};
+	std::vector<float> exposure = sky_exposure(canopy, areas, 0.2f, probes);
+	ASSERT_EQ((int)exposure.size(), (int)probes.size());
+
+	float core = exposure[0], surface = exposure[1], below = exposure[2], beside = exposure[3];
+	ASSERT_GT(surface, core);
+	ASSERT_GT(0.95f, below);
+	ASSERT_GT(below, core);
+	ASSERT_TRUE(beside > core && beside < 1.0f);
+	for (float value : exposure)
+		ASSERT_TRUE(value > 0.0f && value <= 1.0f);
+
+	std::vector<float> open = sky_exposure({}, {}, 0.2f, probes);
+	for (float value : open)
+		ASSERT_EQ(value, 1.0f);
 }
 
 int main()

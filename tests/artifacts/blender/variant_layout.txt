@@ -1,0 +1,8 @@
+# world x of each variant and its rig, per generate
+
+run 0 variant 0: mesh 0.000 rig 0.000
+run 0 variant 1: mesh 10.000 rig 10.000
+run 0 variant 2: mesh 20.000 rig 20.000
+run 1 variant 0: mesh 0.000 rig 0.000
+run 1 variant 1: mesh 10.000 rig 10.000
+run 1 variant 2: mesh 20.000 rig 20.000

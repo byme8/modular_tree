@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import contextlib
@@ -6,7 +5,9 @@ import os
 
 import bpy
 
+from ...pivot_painter.tree_asset import resolve_mesh_object
 from ..base_types.node import MtreeNode
+from ..pipeline import VARIANTS_ID, mesher_upstream, upstream_node
 
 ENGINE_AXES = {
     "UNITY": {"axis_up": "Y", "axis_forward": "-Z"},
@@ -15,8 +16,38 @@ ENGINE_AXES = {
 }
 
 
-class MTreeMeshExport(bpy.types.Node, MtreeNode):
+@contextlib.contextmanager
+def selectable(objects):
+    hidden = [obj.name for obj in objects if obj.hide_viewport]
+    for name in hidden:
+        bpy.data.objects[name].hide_viewport = False
+    bpy.context.view_layer.update()
+    try:
+        yield
+    finally:
+        for name in hidden:
+            obj = bpy.data.objects.get(name)
+            if obj is not None:
+                obj.hide_viewport = True
 
+
+@contextlib.contextmanager
+def rest_pose(armature_names):
+    previous = {}
+    for name in armature_names:
+        armature = bpy.data.objects[name].data
+        previous[name] = armature.pose_position
+        armature.pose_position = "REST"
+    try:
+        yield
+    finally:
+        for name, position in previous.items():
+            obj = bpy.data.objects.get(name)
+            if obj is not None:
+                obj.data.pose_position = position
+
+
+class MTreeMeshExport(bpy.types.Node, MtreeNode):
     bl_idname = "mt_MeshExportNode"
     bl_label = "Mesh Export"
 
@@ -43,19 +74,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         name="Path",
         subtype="DIR_PATH",
         default="//export/",
-    )
-    export_selection: bpy.props.EnumProperty(
-        name="Objects",
-        items=[
-            ("COLLECTION", "Collection", "Every mesh in the named collection"),
-            ("SELECTED", "Selected", "Currently selected objects"),
-        ],
-        default="COLLECTION",
-    )
-    collection_name: bpy.props.StringProperty(
-        name="Collection",
-        description="Collection to export when Objects is set to Collection",
-        default="tree_variants",
     )
     separate_files: bpy.props.BoolProperty(
         name="One File Each",
@@ -84,8 +102,10 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
 
     payload_summary: bpy.props.StringProperty(default="")
 
+    chain_input = ("mt_MeshSocket", "Source")
+
     def init(self, context):
-        self.add_input("mt_TreeSocket", "Tree", is_property=False)
+        self.add_chain_sockets()
 
     def draw(self, context, layout):
         if self.status_message:
@@ -105,9 +125,7 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
 
         source_box = layout.box()
         source_box.label(text="Source")
-        source_box.prop(self, "export_selection")
-        if self.export_selection == "COLLECTION":
-            source_box.prop(self, "collection_name")
+        source_box.label(text=self._describe_source(), icon="LINKED")
         source_box.prop(self, "separate_files")
 
         options_box = layout.box()
@@ -185,14 +203,33 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
             clips += count_wind_clips(obj)
         return rigged, bones, clips
 
-    def _gather_objects(self):
-        if self.export_selection == "SELECTED":
-            return [obj for obj in bpy.context.selected_objects if obj.type == "MESH"]
+    def _describe_source(self):
+        source = upstream_node(self)
+        if source is None:
+            return "Connect a tree or Tree Variants"
+        if source.bl_idname == VARIANTS_ID:
+            return f"Variants: {source.output_collection_name()}"
+        return f"Tree: {self._source_name()}"
 
-        collection = bpy.data.collections.get(self.collection_name)
-        if collection is None:
+    def _gather_objects(self):
+        source = upstream_node(self)
+        if source is None:
             return []
-        return [obj for obj in collection.objects if obj.type == "MESH"]
+        if source.bl_idname == VARIANTS_ID:
+            return source.variant_objects()
+
+        mesher = mesher_upstream(source)
+        obj = None if mesher is None else resolve_mesh_object(mesher.tree_object)
+        return [] if obj is None else [obj]
+
+    def _source_name(self):
+        source = upstream_node(self)
+        if source is not None and source.bl_idname == VARIANTS_ID:
+            return source.output_collection_name()
+        mesher = None if source is None else mesher_upstream(source)
+        if mesher is None or not mesher.tree_object:
+            return "trees"
+        return mesher.tree_object
 
     def do_export(self):
         self.status_message = ""
@@ -213,8 +250,11 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
         previous_active = bpy.context.view_layer.objects.active
 
         try:
+            levels = self._lod_levels()
             if self.export_format == "BLEND":
                 count = self._export_blend(export_dir)
+            elif levels:
+                count = self._export_lods(objects, export_dir, levels)
             elif self.separate_files:
                 count = self._export_separate(objects, export_dir)
             else:
@@ -241,12 +281,6 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
                     obj.select_set(True)
             bpy.context.view_layer.objects.active = previous_active
 
-    def _find_mesher(self):
-        for node in self.get_node_tree().nodes:
-            if node.bl_idname == "mt_MesherNode":
-                return node
-        return None
-
     def _ensure_wind_clips(self, objects):
         from ...pivot_painter.tree_asset import find_armature
         from ...pivot_painter.wind_animation import (
@@ -254,14 +288,14 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
             build_rig_for,
             count_wind_clips,
         )
-        from .foliage_wind_node import find_foliage_wind_settings
+        from .foliage_wind_node import foliage_wind_settings_for
 
-        settings = find_foliage_wind_settings(self.get_node_tree())
-        if not settings["build_bone_rig"]:
+        mesher = self.get_mesher()
+        if mesher is None:
             return 0
 
-        mesher = self._find_mesher()
-        if mesher is None:
+        settings = foliage_wind_settings_for(mesher)
+        if not settings["build_bone_rig"]:
             return 0
 
         wanted = mesher.morph_directions
@@ -275,9 +309,7 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
             if find_armature(obj) is not None and count_wind_clips(obj) == wanted:
                 continue
 
-            rig = build_rig_for(
-                obj.data, mesher.segments_per_chain, mesher._stiffness_settings()
-            )
+            rig = build_rig_for(obj.data, mesher.segments_per_chain, mesher._stiffness_settings())
             count, _ = bake_wind_clips(obj, rig, directions=wanted)
             baked += count
 
@@ -302,27 +334,37 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
 
         return armatures
 
-    def _write_file(self, filepath, objects):
+    def _write_file(self, filepath, objects, owners=None, clips=True):
         axes = ENGINE_AXES[self.target_engine]
-        armatures = self._rigged_armatures(objects)
+        armatures = self._rigged_armatures(objects if owners is None else owners)
 
         if armatures:
             self._select_only(list(objects) + armatures)
 
-        self._write_selection(filepath, objects, axes, bool(armatures))
+        armature_names = [armature.name for armature in armatures]
+        if clips:
+            self._write_selection(filepath, axes, armature_names)
+            return
 
-    def _write_selection(self, filepath, objects, axes, rigged):
+        with rest_pose(armature_names):
+            self._write_selection(filepath, axes, armature_names, clips=False)
+
+    def _write_selection(self, filepath, axes, armature_names, clips=True):
+        from ...pivot_painter.wind_animation import own_clips_on_nla
+
+        rigged = bool(armature_names)
+        animated = rigged and clips
         if self.export_format == "FBX":
             bpy.ops.export_scene.fbx(
                 filepath=filepath,
                 use_selection=True,
                 apply_unit_scale=True,
                 bake_space_transform=False,
-                apply_scale_options="FBX_SCALE_ALL",
+                apply_scale_options="FBX_SCALE_UNITS",
                 mesh_smooth_type="FACE",
                 object_types={"MESH", "ARMATURE"} if rigged else {"MESH"},
-                bake_anim=rigged,
-                bake_anim_use_all_actions=rigged,
+                bake_anim=animated,
+                bake_anim_use_all_actions=animated,
                 bake_anim_use_nla_strips=False,
                 bake_anim_simplify_factor=0.0,
                 add_leaf_bones=False,
@@ -335,50 +377,115 @@ class MTreeMeshExport(bpy.types.Node, MtreeNode):
                 axis_forward=axes["axis_forward"],
             )
         else:
-            bpy.ops.export_scene.gltf(
-                filepath=filepath,
-                use_selection=True,
-                export_yup=(axes["axis_up"] == "Y"),
-                export_apply=self.apply_modifiers,
-                export_morph=False,
-                export_skins=rigged,
-                export_animations=rigged,
-                export_texcoords=True,
-                export_normals=True,
-                export_all_vertex_colors=True,
-                export_attributes=True,
-            )
+            clip_tracks = own_clips_on_nla(armature_names) if clips else contextlib.nullcontext()
+            with clip_tracks:
+                bpy.ops.export_scene.gltf(
+                    filepath=filepath,
+                    use_selection=True,
+                    export_yup=(axes["axis_up"] == "Y"),
+                    export_apply=self.apply_modifiers,
+                    export_morph=False,
+                    export_skins=rigged,
+                    export_animations=animated,
+                    export_animation_mode="ACTIONS",
+                    export_anim_single_armature=False,
+                    export_texcoords=True,
+                    export_normals=True,
+                    export_all_vertex_colors=True,
+                    export_attributes=True,
+                )
 
     def _export_separate(self, objects, export_dir):
         extension = "fbx" if self.export_format == "FBX" else "glb"
         count = 0
 
         for obj in objects:
-            original_location = tuple(obj.location)
+            anchor = self._hierarchy_root(obj)
+            original_location = tuple(anchor.location)
             if self.reset_transforms:
-                obj.location = (0.0, 0.0, 0.0)
+                anchor.location = (0.0, 0.0, 0.0)
 
             try:
                 self._select_only([obj])
-                self._write_file(
-                    os.path.join(export_dir, f"{obj.name}.{extension}"), [obj]
-                )
+                self._write_file(os.path.join(export_dir, f"{obj.name}.{extension}"), [obj])
                 count += 1
             finally:
-                obj.location = original_location
+                anchor.location = original_location
 
         return count
 
+    @staticmethod
+    def _hierarchy_root(obj):
+        while obj.parent is not None:
+            obj = obj.parent
+        return obj
+
     def _export_combined(self, objects, export_dir):
         extension = "fbx" if self.export_format == "FBX" else "glb"
-        name = self.collection_name if self.export_selection == "COLLECTION" else "trees"
+        name = self._source_name()
 
         self._select_only(objects)
         self._write_file(os.path.join(export_dir, f"{name}.{extension}"), objects)
         return 1
 
+    def _lod_levels(self):
+        from ...pivot_painter.leaf_lods import COARSE_LEVELS
+
+        mesher = self.get_mesher()
+        leaf_stage = None if mesher is None else mesher.leaf_stage()
+        if leaf_stage is None or not leaf_stage.build_lods:
+            return ()
+        return (0, *COARSE_LEVELS)
+
+    def _objects_at_level(self, trees, level):
+        from ...pivot_painter.leaf_lods import lod_object_name
+
+        if level == 0:
+            return list(trees)
+        found = []
+        for tree in trees:
+            lod = resolve_mesh_object(lod_object_name(tree, level))
+            if lod is None:
+                raise ValueError(f"{tree.name} has no LOD{level}; generate the tree again")
+            found.append(lod)
+        return found
+
+    def _export_lods(self, trees, export_dir, levels):
+        extension = "fbx" if self.export_format == "FBX" else "glb"
+        by_level = {level: self._objects_at_level(trees, level) for level in levels}
+        everything = [obj for objects in by_level.values() for obj in objects]
+        count = 0
+
+        with selectable(everything):
+            if not self.separate_files:
+                name = self._source_name()
+                for level, objects in by_level.items():
+                    filepath = os.path.join(export_dir, f"{name}_LOD{level}.{extension}")
+                    self._select_only(objects)
+                    self._write_file(filepath, objects, owners=trees, clips=level == 0)
+                    count += 1
+                return count
+
+            for index, tree in enumerate(trees):
+                anchor = self._hierarchy_root(tree)
+                original_location = tuple(anchor.location)
+                if self.reset_transforms:
+                    anchor.location = (0.0, 0.0, 0.0)
+
+                try:
+                    for level, objects in by_level.items():
+                        obj = objects[index]
+                        filepath = os.path.join(export_dir, f"{tree.name}_LOD{level}.{extension}")
+                        self._select_only([obj])
+                        self._write_file(filepath, [obj], owners=[tree], clips=level == 0)
+                        count += 1
+                finally:
+                    anchor.location = original_location
+
+        return count
+
     def _export_blend(self, export_dir):
-        name = self.collection_name if self.export_selection == "COLLECTION" else "trees"
+        name = self._source_name()
         bpy.ops.wm.save_as_mainfile(
             filepath=os.path.join(export_dir, f"{name}.blend"),
             copy=True,

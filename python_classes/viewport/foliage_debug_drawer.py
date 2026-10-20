@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import inspect
@@ -41,6 +40,7 @@ DEBUG_CHANNELS = [
     ("TINT", "6 Tint Ramp", "Vertex colour alpha channel", 6),
     ("BLADE_HEIGHT", "7 Blade Height", "Wind displacement bound, in metres", 7),
     ("STRUCTURE", "8 Structure", "Branch chains in distinct colours", 8),
+    ("SHADED_OCCLUSION", "9 Canopy AO", "Occlusion as the low-end shader applies it, in grey", 9),
 ]
 
 SOURCE_FLOAT_ATTRIBUTES = ["stem_id", "branch_extent", "radius", "hierarchy_depth"]
@@ -114,21 +114,26 @@ def compute_channel_colors(streams: dict, stem_ids: np.ndarray, channel: str) ->
         return value_to_viridis(heights / peak)
     if channel == "STRUCTURE":
         return stem_id_to_color(stem_ids)
+    if channel == "SHADED_OCCLUSION":
+        grey = np.clip(colors[0::4], 0.0, 1.0)
+        return np.column_stack([grey, grey, grey, np.ones(len(grey))])
 
     return None
 
 
-def _find_node_tree_for_object(obj):
+def _find_mesher_for_object(obj):
     for node_tree in bpy.data.node_groups:
         if node_tree.bl_idname != "mt_MtreeNodeTree":
             continue
         for node in node_tree.nodes:
             if node.bl_idname == "mt_MesherNode" and getattr(node, "tree_object", "") == obj.name:
-                return node_tree
+                return node
     return None
 
 
 def read_mesh_streams(mesh, settings: dict | None = None) -> tuple[dict, np.ndarray] | None:
+    from ..pivot_painter.formats.foliage import FoliageExporter
+
     required = SOURCE_FLOAT_ATTRIBUTES + SOURCE_VECTOR_ATTRIBUTES
     if any(name not in mesh.attributes for name in required):
         return None
@@ -137,31 +142,13 @@ def read_mesh_streams(mesh, settings: dict | None = None) -> tuple[dict, np.ndar
     if num_verts == 0:
         return None
 
-    positions = np.zeros(num_verts * 3)
-    mesh.vertices.foreach_get("co", positions)
+    accepted = set(inspect.signature(FoliageExporter).parameters)
+    exporter_settings = {key: value for key, value in (settings or {}).items() if key in accepted}
+    streams = FoliageExporter(mesh=mesh, **exporter_settings).compute_streams()
 
-    values = {}
-    for name in SOURCE_FLOAT_ATTRIBUTES:
-        buffer = np.zeros(num_verts)
-        mesh.attributes[name].data.foreach_get("value", buffer)
-        values[name] = buffer
-
-    for name in SOURCE_VECTOR_ATTRIBUTES:
-        buffer = np.zeros(num_verts * 3)
-        mesh.attributes[name].data.foreach_get("vector", buffer)
-        values[name] = buffer.reshape(-1, 3)
-
-    streams = compute_all_streams(
-        vertex_positions=positions.reshape(-1, 3),
-        stem_ids=values["stem_id"],
-        branch_extents=values["branch_extent"],
-        radii=values["radius"],
-        pivot_positions=values["pivot_position"],
-        directions=values["direction"],
-        hierarchy_depths=values["hierarchy_depth"],
-        **_stream_settings(settings),
-    )
-    return streams, values["stem_id"]
+    stem_ids = np.zeros(num_verts)
+    mesh.attributes["stem_id"].data.foreach_get("value", stem_ids)
+    return streams, stem_ids
 
 
 def _stream_settings(settings: dict | None) -> dict:
@@ -221,9 +208,9 @@ def draw_foliage_debug():
         return
 
     try:
-        from ..nodes.export_nodes.foliage_wind_node import find_foliage_wind_settings
+        from ..nodes.export_nodes.foliage_wind_node import foliage_wind_settings_for
 
-        settings = find_foliage_wind_settings(_find_node_tree_for_object(obj))
+        settings = foliage_wind_settings_for(_find_mesher_for_object(obj))
     except ImportError:
         settings = None
 

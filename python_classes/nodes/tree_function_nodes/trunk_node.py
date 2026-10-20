@@ -27,6 +27,7 @@ PARAM_DESCRIPTIONS = {
 class TrunkNode(bpy.types.Node, MtreeFunctionNode):
     bl_idname = "mt_TrunkNode"
     bl_label = "Trunk"
+    chain_input = None
 
     # Collapsible section states for inspector panel
     show_basic: bpy.props.BoolProperty(name="Basic", default=True)
@@ -37,7 +38,6 @@ class TrunkNode(bpy.types.Node, MtreeFunctionNode):
         return lazy_m_tree.TrunkFunction
 
     def init(self, context):
-        self.add_input("mt_TreeSocket", "Tree", is_property=False)
         self.add_input(
             "mt_IntSocket",
             "Seed",

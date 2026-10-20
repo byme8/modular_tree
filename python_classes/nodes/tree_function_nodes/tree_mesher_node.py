@@ -1,9 +1,9 @@
-
 from __future__ import annotations
 
 import time
 
 import bpy
+import numpy as np
 
 from ... import diagnostics
 from ...m_tree_wrapper import lazy_m_tree as m_tree
@@ -12,12 +12,10 @@ from ...pivot_painter.tree_asset import find_armature, resolve_mesh_object, stri
 from ...pivot_painter.wind_animation import STRENGTH_STOPS
 from ..base_types.node import MtreeNode
 from ..debounce import schedule_build, schedule_preview
-from ..surface_nodes.linking import (
-    BLOCK_FILL_ID,
-    LEAF_CARDS_ID,
-    acting_surface_node,
-    linked_surface_nodes,
-)
+from ..pipeline import LEAF_CARDS_ID, LEAF_CLUMPS_ID, chain_stage, resolve_trunk
+
+MANIFOLD = "MANIFOLD"
+BLOCKS = "BLOCKS"
 
 
 def on_update_prop(node, context):
@@ -29,19 +27,80 @@ def on_update_preview(node, context):
 
 
 class TreeMesherNode(bpy.types.Node, MtreeNode):
-
     bl_idname = "mt_MesherNode"
     bl_label = "Tree Mesher"
+
+    chain_input = ("mt_TreeSocket", "Skeleton")
+    chain_output = ("mt_MeshSocket", "Mesh")
 
     auto_update: bpy.props.BoolProperty(
         name="Auto Update",
         description="Automatically rebuild tree when parameters or connections change",
         default=True,
     )
+    mesh_mode: bpy.props.EnumProperty(
+        name="Mesh",
+        items=[
+            (MANIFOLD, "Manifold", "One continuous skin swept along every branch", 0),
+            (BLOCKS, "Blocks", "Loose blocks strung along every branch chain", 1),
+        ],
+        default=MANIFOLD,
+        update=on_update_prop,
+    )
     radial_resolution: bpy.props.IntProperty(
         name="Radial Resolution", default=32, min=3, update=on_update_prop
     )
     smoothness: bpy.props.IntProperty(name="smoothness", default=4, min=0, update=on_update_prop)
+
+    block_density: bpy.props.FloatProperty(
+        name="Density",
+        description="Blocks per metre along every branch chain",
+        default=10.0,
+        min=0.1,
+        max=1000.0,
+        update=on_update_prop,
+    )
+    block_scale: bpy.props.FloatProperty(
+        name="Scale",
+        description="Grows or shrinks every block; above 1 they overlap in every direction",
+        default=1.0,
+        min=0.1,
+        max=5.0,
+        update=on_update_prop,
+    )
+    block_trunk_length: bpy.props.FloatProperty(
+        name="Trunk Block Length",
+        description="Length of each trunk block in metres; 0 uses Density like every other chain",
+        default=0.0,
+        min=0.0,
+        max=100.0,
+        update=on_update_prop,
+    )
+    block_roll_variation: bpy.props.FloatProperty(
+        name="Roll Variation",
+        description="Each block twists about its branch by a random angle up to this, in degrees",
+        default=15.0,
+        min=0.0,
+        max=180.0,
+        update=on_update_prop,
+    )
+    block_seed: bpy.props.IntProperty(
+        name="Seed",
+        description="Seed for the block rolls; the variants offset is added to it",
+        default=0,
+        update=on_update_prop,
+    )
+    block_max_polygons: bpy.props.IntProperty(
+        name="Max Polygons",
+        description="A build that would exceed this fails and leaves the tree as it was",
+        default=200000,
+        min=1000,
+        max=10000000,
+        update=on_update_prop,
+    )
+    blocks_status_message: bpy.props.StringProperty(default="")
+    blocks_status_is_error: bpy.props.BoolProperty(default=False)
+
     tree_object: bpy.props.StringProperty(default="")
 
     build_bone_rig: bpy.props.BoolProperty(
@@ -54,6 +113,7 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
         ),
         default=False,
     )
+
     @property
     def segments_per_chain(self):
         """Read from the Foliage Wind node, which owns the rig settings.
@@ -62,9 +122,9 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
         built another: the value shown on the wind node was ignored and this
         one silently won.
         """
-        from ...nodes.export_nodes.foliage_wind_node import find_foliage_wind_settings
+        from ...nodes.export_nodes.foliage_wind_node import foliage_wind_settings_for
 
-        return find_foliage_wind_settings(self.get_node_tree())["segments_per_chain"]
+        return foliage_wind_settings_for(self)["segments_per_chain"]
 
     morph_directions: bpy.props.IntProperty(
         name="Wind Directions",
@@ -114,7 +174,7 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
     )
 
     def init(self, context):
-        self.add_output("mt_TreeSocket", "Tree", is_property=False)
+        self.add_chain_sockets()
 
     def draw(self, context, layout):
         """Blender aborts a node's draw at the first exception and renders only
@@ -180,10 +240,10 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
 
         from ...nodes.export_nodes.foliage_wind_node import (
             describe_rig_layout,
-            find_foliage_wind_settings,
+            foliage_wind_settings_for,
         )
 
-        settings = find_foliage_wind_settings(self.get_node_tree())
+        settings = foliage_wind_settings_for(self)
         diagnostics.log("draw_rig: segments_per_chain=%s", settings["segments_per_chain"])
 
         rig_box.label(
@@ -200,9 +260,7 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
 
         baked = self._clip_count()
         diagnostics.log("draw_rig: clip_count=%s", baked)
-        clip_box.label(
-            text=f"{baked} clips, {len(STRENGTH_STOPS)} strength stops", icon="INFO"
-        )
+        clip_box.label(text=f"{baked} clips, {len(STRENGTH_STOPS)} strength stops", icon="INFO")
 
         bake_row = clip_box.row()
         bake_row.enabled = self._has_valid_tree_object()
@@ -248,8 +306,28 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
 
     def _draw_properties(self, container):
         container.prop(self, "auto_update")
-        container.prop(self, "radial_resolution")
-        container.prop(self, "smoothness")
+        container.prop(self, "mesh_mode", expand=True)
+
+        if self.mesh_mode == BLOCKS:
+            blocks_box = container.box()
+            if self.blocks_status_message:
+                status_row = blocks_box.row()
+                status_row.alert = self.blocks_status_is_error
+                icon = "ERROR" if self.blocks_status_is_error else "CHECKMARK"
+                status_row.label(text=self.blocks_status_message, icon=icon)
+            for name in (
+                "block_density",
+                "block_scale",
+                "block_trunk_length",
+                "block_roll_variation",
+                "block_seed",
+                "block_max_polygons",
+            ):
+                blocks_box.prop(self, name)
+        else:
+            container.prop(self, "radial_resolution")
+            container.prop(self, "smoothness")
+
         container.prop(self, "log_pipeline", icon="CONSOLE")
 
     def _draw_leaves_button(self, container):
@@ -257,7 +335,7 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
         Blender forbids writing to ID data while drawing. The exception aborts
         the whole node's draw, hiding every panel below this one.
         """
-        if acting_surface_node(self, LEAF_CARDS_ID) is not None:
+        if self.leaf_cards_node() is not None or self.leaf_clumps_node() is not None:
             return
 
         tree_obj = resolve_mesh_object(self.tree_object)
@@ -279,15 +357,16 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
             "build_into",
             target=obj.name,
             seed_offset=seed_offset,
+            mesh_mode=self.mesh_mode,
             resolution=self.radial_resolution,
             smoothness=self.smoothness,
             rig=self.build_bone_rig,
         ):
             diagnostics.log("  graph %s", diagnostics.describe_graph(self))
 
-            trunk_node = self._trunk_link()
+            trunk_node, reason = resolve_trunk(self)
             if trunk_node is None:
-                raise ValueError("No connected trunk node")
+                raise ValueError(reason)
 
             with diagnostics.stage("construct_function", trunk=trunk_node.name):
                 trunk_function = trunk_node.construct_function(seed_offset)
@@ -299,24 +378,33 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
                 tree.set_trunk_function(trunk_function)
                 tree.execute_functions()
 
-            with diagnostics.stage("mesh_tree") as meshing:
-                cpp_mesh = self._mesh_tree(tree)
-                coordinates = len(cpp_mesh.get_vertices())
-                meshing.record(
-                    verts=int(coordinates / 3),
-                    polys=len(cpp_mesh.get_polygons()),
-                )
+            blocks = self.mesh_mode == BLOCKS
+            cpp_mesh = None
+            if not blocks:
+                with diagnostics.stage("mesh_tree") as meshing:
+                    cpp_mesh = self._mesh_tree(tree)
+                    coordinates = len(cpp_mesh.get_vertices())
+                    meshing.record(
+                        verts=int(coordinates / 3),
+                        polys=len(cpp_mesh.get_polygons()),
+                    )
 
-            block_fill = acting_surface_node(self, BLOCK_FILL_ID)
-            leaf_cards = acting_surface_node(self, LEAF_CARDS_ID)
-            surface_acted = block_fill is not None or leaf_cards is not None
+            leaf_cards = self.leaf_cards_node()
+            leaf_clumps = self.leaf_clumps_node()
+            has_leaves = leaf_cards is not None or leaf_clumps is not None
+            surface_acted = blocks or has_leaves
             if surface_acted:
-                cpp_mesh = self._apply_surface_nodes(
-                    tree, cpp_mesh, block_fill, leaf_cards, seed_offset
-                )
+                cpp_mesh = self._apply_surface(tree, cpp_mesh, leaf_cards, leaf_clumps, seed_offset)
+
+            if has_leaves:
+                self._remove_leaves_modifier(obj)
 
             if leaf_cards is not None:
-                self._remove_leaves_modifier(obj)
+                lods = self._leaf_lods(tree, leaf_cards, seed_offset)
+            elif leaf_clumps is not None:
+                lods = self._clump_lods(tree, leaf_clumps, seed_offset)
+            else:
+                lods = []
 
             strip_rig(obj)
             if obj.data.shape_keys is not None:
@@ -327,12 +415,14 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
                 obj.data,
                 cpp_mesh,
                 flat_shading=surface_acted,
-                material_slots=2 if surface_acted else 0,
+                material_slots=2 if has_leaves else 1,
             )
             diagnostics.log("  built %s", diagnostics.describe_mesh(obj.data))
 
             if len(obj.data.vertices) == 0:
                 raise ValueError(self._empty_mesh_reason(trunk_node))
+
+            self._write_leaf_lods(obj, lods, leaf_cards or leaf_clumps)
 
             if self.build_bone_rig:
                 return self._build_rig(obj)
@@ -368,8 +458,9 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
         )
 
     def build_tree(self):
-        if not self.get_tree_validity():
-            self.status_message = "Connect a Trunk node to generate"
+        trunk_node, reason = resolve_trunk(self)
+        if trunk_node is None:
+            self.status_message = reason
             self.status_is_error = True
             return
 
@@ -461,12 +552,8 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
             return
 
         with diagnostics.stage("bake_wind_clips", target=tree_obj.name) as baking:
-            rig = build_rig_for(
-                tree_obj.data, self.segments_per_chain, self._stiffness_settings()
-            )
-            count, message = bake_wind_clips(
-                tree_obj, rig, directions=self.morph_directions
-            )
+            rig = build_rig_for(tree_obj.data, self.segments_per_chain, self._stiffness_settings())
+            count, message = bake_wind_clips(tree_obj, rig, directions=self.morph_directions)
             baking.record(clips=count)
 
         self.preview_wind_strength = 0.0
@@ -488,11 +575,33 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
 
     def _stiffness_settings(self):
         from ...nodes.export_nodes.foliage_wind_node import (
-            find_foliage_wind_settings,
+            foliage_wind_settings_for,
             rig_settings,
         )
 
-        return rig_settings(find_foliage_wind_settings(self.get_node_tree()))
+        return rig_settings(foliage_wind_settings_for(self))
+
+    def leaf_cards_node(self):
+        return chain_stage(self, LEAF_CARDS_ID)
+
+    def leaf_clumps_node(self):
+        return chain_stage(self, LEAF_CLUMPS_ID)
+
+    def leaf_stage(self):
+        return self.leaf_cards_node() or self.leaf_clumps_node()
+
+    def _block_fill(self, seed_offset):
+        fill = m_tree.BlockFill()
+        fill.density = self.block_density
+        fill.scale = self.block_scale
+        fill.trunk_block_length = self.block_trunk_length
+        fill.roll_variation_degrees = self.block_roll_variation
+        fill.seed = self.block_seed + seed_offset
+        return fill
+
+    def _set_blocks_status(self, message, is_error=False):
+        self.blocks_status_message = message
+        self.blocks_status_is_error = is_error
 
     def _mesh_tree(self, tree):
         mesher = m_tree.ManifoldMesher()
@@ -500,20 +609,16 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
         mesher.smooth_iterations = self.smoothness
         return mesher.mesh_tree(tree)
 
-    def _apply_surface_nodes(self, tree, cpp_mesh, block_fill, leaf_cards, seed_offset):
-        for node, kind in ((block_fill, BLOCK_FILL_ID), (leaf_cards, LEAF_CARDS_ID)):
-            if node is None:
-                continue
-            for ignored in linked_surface_nodes(self, kind)[1:]:
-                ignored.set_status(f"Ignored: {node.name} already acts on {self.name}", True)
-
-        blocks = None if block_fill is None else block_fill.native(seed_offset)
+    def _apply_surface(self, tree, cpp_mesh, leaf_cards, leaf_clumps, seed_offset):
+        blocks = self._block_fill(seed_offset) if self.mesh_mode == BLOCKS else None
         cards = None if leaf_cards is None else leaf_cards.native(seed_offset)
+        clumps = None if leaf_clumps is None else leaf_clumps.native(seed_offset)
 
         with diagnostics.stage(
-            "surface_nodes",
-            block_fill=None if block_fill is None else block_fill.name,
+            "surface",
+            mesh_mode=self.mesh_mode,
             leaf_cards=None if leaf_cards is None else leaf_cards.name,
+            leaf_clumps=None if leaf_clumps is None else leaf_clumps.name,
         ) as stage:
             polygons = 0
             if blocks is not None:
@@ -521,23 +626,23 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
             if cards is not None:
                 polygons += cards.count_polygons(tree)
 
-            if block_fill is not None and polygons > block_fill.max_polygons:
+            if blocks is not None and polygons > self.block_max_polygons:
                 message = (
                     f"Block Fill needs {polygons:,} polygons, over the cap of "
-                    f"{block_fill.max_polygons:,}"
+                    f"{self.block_max_polygons:,}"
                 )
-                block_fill.set_status(f"Error: {message}", True)
+                self._set_blocks_status(f"Error: {message}", True)
                 raise ValueError(message)
 
             if blocks is not None:
                 cpp_mesh = blocks.mesh_tree(tree)
                 stage.record(
-                    density=block_fill.density,
-                    scale=block_fill.scale,
+                    density=self.block_density,
+                    scale=self.block_scale,
                     blocks=blocks.block_count,
                     polygons=blocks.polygon_count,
                 )
-                block_fill.set_status(
+                self._set_blocks_status(
                     f"{blocks.block_count:,} blocks, {blocks.polygon_count:,} polygons"
                 )
 
@@ -546,7 +651,90 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
                 stage.record(cards=cards.card_count)
                 leaf_cards.set_status(f"{cards.card_count:,} cards")
 
+            if clumps is not None:
+                try:
+                    clumps.append(tree, cpp_mesh)
+                except RuntimeError as error:
+                    leaf_clumps.set_status(f"Error: {error}", True)
+                    raise ValueError(str(error)) from error
+                stage.record(
+                    clumps=clumps.clump_count,
+                    voxels=clumps.voxel_count,
+                    clump_polygons=clumps.polygon_count,
+                )
+                leaf_clumps.set_status(
+                    f"{clumps.clump_count:,} clumps, {clumps.voxel_count:,} voxels, "
+                    f"{clumps.polygon_count:,} polygons"
+                )
+
         return cpp_mesh
+
+    def _bark_mesh(self, tree, seed_offset):
+        if self.mesh_mode == BLOCKS:
+            return self._block_fill(seed_offset).mesh_tree(tree)
+        return self._mesh_tree(tree)
+
+    def _leaf_lods(self, tree, leaf_cards, seed_offset):
+        from ...pivot_painter.leaf_lods import source_vertices
+
+        lods = []
+        for level, fraction in leaf_cards.lod_fractions():
+            with diagnostics.stage("leaf_lod", level=level, fraction=fraction) as stage:
+                cpp_mesh = self._bark_mesh(tree, seed_offset)
+                bark_vertices = int(len(cpp_mesh.get_vertices()) / 3)
+                cards = leaf_cards.native(seed_offset)
+                kept = cards.lod_cards(tree, fraction)
+                cards.append(tree, cpp_mesh, fraction)
+                vertices = int(len(cpp_mesh.get_vertices()) / 3)
+                per_card = int((vertices - bark_vertices) / len(kept)) if kept else 0
+                stage.record(cards=len(kept), verts=vertices)
+            lods.append((level, cpp_mesh, source_vertices(bark_vertices, kept, per_card)))
+        return lods
+
+    def _clump_lods(self, tree, leaf_clumps, seed_offset):
+        lods = []
+        counts = []
+        for level, scale in leaf_clumps.lod_voxel_scales():
+            with diagnostics.stage("leaf_lod", level=level, voxel_scale=scale) as stage:
+                cpp_mesh = self._bark_mesh(tree, seed_offset)
+                bark_vertices = int(len(cpp_mesh.get_vertices()) / 3)
+                clumps = leaf_clumps.native(seed_offset)
+                lod0 = np.asarray(clumps.append_lod(tree, cpp_mesh, scale), dtype=np.int32)
+                sources = np.concatenate(
+                    [
+                        np.arange(bark_vertices, dtype=np.int32),
+                        np.where(lod0 < 0, 0, lod0 + bark_vertices).astype(np.int32),
+                    ]
+                )
+                stage.record(
+                    voxel_scale=scale,
+                    voxels=clumps.voxel_count,
+                    clump_polygons=clumps.polygon_count,
+                    verts=int(len(cpp_mesh.get_vertices()) / 3),
+                )
+                counts.append(f"LOD{level} {clumps.polygon_count:,}")
+            lods.append((level, cpp_mesh, sources))
+        if counts:
+            leaf_clumps.set_status(f"{leaf_clumps.status_message}, {' / '.join(counts)} polygons")
+        return lods
+
+    def _write_leaf_lods(self, obj, lods, leaf_stage):
+        from ...pivot_painter.leaf_lods import (
+            find_lod_objects,
+            remove_lod_objects,
+            show_lod,
+            write_lod_object,
+        )
+
+        if not lods:
+            if find_lod_objects(obj):
+                remove_lod_objects(obj)
+                show_lod(obj, 0)
+            return
+
+        for level, cpp_mesh, sources in lods:
+            write_lod_object(obj, level, cpp_mesh, sources, len(obj.data.materials))
+        show_lod(obj, leaf_stage.preview_level())
 
     def _remove_leaves_modifier(self, obj):
         from ...resources.node_groups import LEAVES_MODIFIER_NAME
@@ -574,33 +762,4 @@ class TreeMesherNode(bpy.types.Node, MtreeNode):
         return tree_obj
 
     def get_tree_validity(self):
-        """Non-function nodes such as Tree Variants also attach to this output,
-        so validity is "a trunk is connected", not "exactly one link".
-        """
-        return self._trunk_link() is not None and not self._detect_loop_rec(self)
-
-    def _trunk_link(self):
-        from ..base_types.node import MtreeFunctionNode
-
-        for link in self.outputs[0].links or []:
-            if isinstance(link.to_node, MtreeFunctionNode):
-                return link.to_node
-        return None
-
-    def _detect_loop_rec(self, node=None, seen_nodes=None):
-        if node is None:
-            node = self
-        if seen_nodes is None:
-            seen_nodes = set()
-
-        for output in node.outputs:
-            if output.links is None:
-                continue
-            for link in output.links:
-                destination_node = link.to_node
-                if destination_node in seen_nodes:
-                    return True
-                seen_nodes.add(destination_node)
-                self._detect_loop_rec(destination_node, seen_nodes)
-
-        return False
+        return resolve_trunk(self)[0] is not None

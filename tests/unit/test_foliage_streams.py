@@ -34,7 +34,11 @@ PRECISION = 6
 def _fmt(value: float) -> str:
     """Format a float at fixed precision, normalising negative zero."""
     formatted = f"{value:.{PRECISION}f}"
-    return "0." + "0" * PRECISION if formatted.startswith("-0.0") and float(formatted) == 0 else formatted
+    return (
+        "0." + "0" * PRECISION
+        if formatted.startswith("-0.0") and float(formatted) == 0
+        else formatted
+    )
 
 
 def write_artifact(name: str, lines: list[str]) -> None:
@@ -118,7 +122,9 @@ class TestStreamSweep:
         in_range = (raw_t >= 0.0) & (raw_t <= 1.0)
         assert along[in_range] == pytest.approx(raw_t[in_range])
 
-        colors = compute_foliage_colors(along, occlusion_base=0.25, translucency_tip=0.8, normal_blend=0.3)
+        colors = compute_foliage_colors(
+            along, occlusion_base=0.25, translucency_tip=0.8, normal_blend=0.3
+        )
         alpha = colors[3::4]
         red = colors[0::4]
         green = colors[1::4]
@@ -340,9 +346,9 @@ class TestTrunkStiffnessControl:
         # the controls exist to override.
         assert rigid[trunk].min() == pytest.approx(1.0)
 
-        bending = compute_all_streams(
-            **tree, trunk_base_stiffness=1.0, trunk_tip_stiffness=0.2
-        )["stiffness"]
+        bending = compute_all_streams(**tree, trunk_base_stiffness=1.0, trunk_tip_stiffness=0.2)[
+            "stiffness"
+        ]
 
         along = compute_all_streams(**tree)["along_branch"]
         trunk_tip = trunk & (along >= 1.0 - 1e-9)
@@ -353,9 +359,9 @@ class TestTrunkStiffnessControl:
         assert bending[trunk].max() - bending[trunk].min() > 0.5
 
         # M11: the rooted ring stays exactly rigid even with a soft trunk.
-        soft = compute_all_streams(
-            **tree, trunk_base_stiffness=0.0, trunk_tip_stiffness=0.0
-        )["stiffness"]
+        soft = compute_all_streams(**tree, trunk_base_stiffness=0.0, trunk_tip_stiffness=0.0)[
+            "stiffness"
+        ]
         rooted = trunk & (along <= ROOTED_EPSILON)
         assert np.all(soft[rooted] == 1.0)
         # Everything above the root is free to move.
@@ -368,9 +374,9 @@ class TestTrunkStiffnessControl:
         side = ~trunk
 
         base = compute_all_streams(**tree, trunk_tip_stiffness=0.5)["stiffness"]
-        scaled = compute_all_streams(
-            **tree, trunk_tip_stiffness=0.5, branch_stiffness=0.25
-        )["stiffness"]
+        scaled = compute_all_streams(**tree, trunk_tip_stiffness=0.5, branch_stiffness=0.25)[
+            "stiffness"
+        ]
 
         assert scaled[trunk] == pytest.approx(base[trunk])
 
@@ -450,9 +456,7 @@ class TestJunctionContinuity:
 
             # The branch is thinner than the trunk, so it must be less rigid.
             assert radii[branch][0] < radii[depths == 0][0]
-            assert np.all(stiffness[base] < 1.0), (
-                f"depth {depth} branch base pinned rigid"
-            )
+            assert np.all(stiffness[base] < 1.0), f"depth {depth} branch base pinned rigid"
             assert stiffness[base].max() <= trunk_top.max() + 1e-9, (
                 f"depth {depth} branch base is stiffer than the trunk top"
             )
@@ -866,6 +870,24 @@ class TestDebugView:
         assert numbering["NORMAL_BLEND"] == 5
         assert numbering["TINT"] == 6
         assert numbering["STRUCTURE"] == 8
+        assert numbering["SHADED_OCCLUSION"] == 9
+
+        grey = compute_channel_colors(streams, stem_ids, "SHADED_OCCLUSION")
+        assert grey[:, 0] == pytest.approx(colors[0::4])
+        assert grey[:, 0] == pytest.approx(grey[:, 2])
+
+    def test_canopy_exposure_darkens_only_occlusion(self):
+        tree = make_synthetic_tree()
+        plain = compute_all_streams(**tree)["colors"].reshape(-1, 4)
+        exposure = np.linspace(0.0, 1.0, len(plain))
+
+        shaded = compute_all_streams(**tree, sky_exposure=exposure, sky_occlusion=0.5)
+        shaded = shaded["colors"].reshape(-1, 4)
+
+        assert shaded[:, 0] == pytest.approx(plain[:, 0] * (1.0 - 0.5 * (1.0 - exposure)))
+        assert shaded[:, 1:] == pytest.approx(plain[:, 1:])
+        off = compute_all_streams(**tree, sky_exposure=exposure, sky_occlusion=0.0)
+        assert off["colors"] == pytest.approx(plain.ravel())
 
     def test_ramp_separates_values(self):
         """M9: the ramp must not collapse distinct values to one colour."""
@@ -883,7 +905,9 @@ class TestDebugView:
         assert np.all(deltas > 1e-3)
 
         # Out-of-range input clamps rather than wrapping to a wrong colour.
-        assert value_to_viridis(np.array([-1.0])) == pytest.approx(value_to_viridis(np.array([0.0])))
+        assert value_to_viridis(np.array([-1.0])) == pytest.approx(
+            value_to_viridis(np.array([0.0]))
+        )
         assert value_to_viridis(np.array([2.0])) == pytest.approx(value_to_viridis(np.array([1.0])))
 
         # Structure view: neighbouring blade ids must not share a colour.
@@ -902,7 +926,12 @@ class TestDebugView:
                 f"{_fmt(ramp[i][1]):>10} {_fmt(ramp[i][2]):>10}"
             )
 
-        lines += ["", "# structure view, blade id to colour", "", f"{'stem_id':>10} {'r':>10} {'g':>10} {'b':>10}"]
+        lines += [
+            "",
+            "# structure view, blade id to colour",
+            "",
+            f"{'stem_id':>10} {'r':>10} {'g':>10} {'b':>10}",
+        ]
         for i in range(len(blade_colors)):
             lines.append(
                 f"{i:>10} {_fmt(blade_colors[i][0]):>10} "

@@ -38,9 +38,7 @@ def _configure():
     destination = os.environ.get(ENV_VAR, "")
     if destination and destination not in ("1", "true", "TRUE"):
         handler = logging.FileHandler(destination, mode="w", encoding="utf-8")
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)-7s %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s"))
         _logger.addHandler(handler)
 
     _configured = True
@@ -121,8 +119,14 @@ def describe_mesh(mesh) -> str:
     vertices = len(mesh.vertices)
     parts = [f"verts={vertices}", f"polys={len(mesh.polygons)}"]
 
-    expected = ("stem_id", "branch_extent", "radius", "hierarchy_depth",
-                "pivot_position", "direction")
+    expected = (
+        "stem_id",
+        "branch_extent",
+        "radius",
+        "hierarchy_depth",
+        "pivot_position",
+        "direction",
+    )
     missing = [name for name in expected if name not in mesh.attributes]
     parts.append("attrs=" + ("all" if not missing else f"MISSING:{','.join(missing)}"))
 
@@ -141,7 +145,5 @@ def describe_mesh(mesh) -> str:
 
 def describe_graph(node) -> str:
     tree = node.id_data
-    links = " ".join(
-        f"{link.from_node.name}->{link.to_node.name}" for link in tree.links
-    )
+    links = " ".join(f"{link.from_node.name}->{link.to_node.name}" for link in tree.links)
     return f"nodes={len(tree.nodes)} links=[{links}]"

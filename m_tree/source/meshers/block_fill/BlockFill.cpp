@@ -11,16 +11,24 @@ namespace
 {
 constexpr int QUADS_PER_BLOCK = 6;
 
-int blocks_on_chain(float density, float length)
+bool is_trunk(const Skeleton& skeleton, const Chain& chain)
 {
-	return std::max(1, (int)std::lround(density * length));
+	return skeleton.segments[(size_t)chain.segments.front()].hierarchy_depth == 0;
 }
 
-int count_blocks(const Skeleton& skeleton, float density)
+int blocks_on_chain(const Skeleton& skeleton, const Chain& chain, float density,
+                    float trunk_block_length)
+{
+	if (trunk_block_length > 0.0f && is_trunk(skeleton, chain))
+		return std::max(1, (int)std::lround(chain.length / trunk_block_length));
+	return std::max(1, (int)std::lround(density * chain.length));
+}
+
+int count_blocks(const Skeleton& skeleton, float density, float trunk_block_length)
 {
 	int blocks = 0;
 	for (const Chain& chain : skeleton.chains)
-		blocks += blocks_on_chain(density, chain.length);
+		blocks += blocks_on_chain(skeleton, chain, density, trunk_block_length);
 	return blocks;
 }
 
@@ -105,7 +113,7 @@ namespace Mtree
 
 int BlockFill::count_polygons(Tree& tree)
 {
-	block_count = count_blocks(Skeleton::from_tree(tree), density);
+	block_count = count_blocks(Skeleton::from_tree(tree), density, trunk_block_length);
 	polygon_count = block_count * QUADS_PER_BLOCK;
 	return polygon_count;
 }
@@ -113,7 +121,7 @@ int BlockFill::count_polygons(Tree& tree)
 Mesh BlockFill::mesh_tree(Tree& tree)
 {
 	Skeleton skeleton = Skeleton::from_tree(tree);
-	block_count = count_blocks(skeleton, density);
+	block_count = count_blocks(skeleton, density, trunk_block_length);
 	polygon_count = block_count * QUADS_PER_BLOCK;
 
 	Mesh mesh;
@@ -126,7 +134,7 @@ Mesh BlockFill::mesh_tree(Tree& tree)
 
 	for (const Chain& chain : skeleton.chains)
 	{
-		int count = blocks_on_chain(density, chain.length);
+		int count = blocks_on_chain(skeleton, chain, density, trunk_block_length);
 		float step = chain.length / count;
 		for (int k = 0; k < count; k++)
 		{

@@ -6,20 +6,22 @@ from __future__ import annotations
 
 import bpy
 
+from ...pivot_painter.leaf_lods import copy_foliage_streams, is_lod_object
 from ...pivot_painter.tree_asset import link_exclusively, resolve_mesh_object
 from ..base_types.node import MtreeNode
-from ..surface_nodes.linking import BLOCK_FILL_ID, LEAF_CARDS_ID, acting_surface_node
 
 SEED_STRIDE = 7919
 
 
 def mesh_summary(mesher) -> str:
-    block_fill = acting_surface_node(mesher, BLOCK_FILL_ID)
-    if block_fill is None:
-        return f"{mesher.radial_resolution} sides, smooth {mesher.smoothness}"
-    summary = f"Blocks, {block_fill.density:g}/m, scale {block_fill.scale:.2f}"
-    if acting_surface_node(mesher, LEAF_CARDS_ID) is not None:
+    if mesher.mesh_mode != "BLOCKS":
+        summary = f"{mesher.radial_resolution} sides, smooth {mesher.smoothness}"
+    else:
+        summary = f"Blocks, {mesher.block_density:g}/m, scale {mesher.block_scale:.2f}"
+    if mesher.leaf_cards_node() is not None:
         summary += ", cards"
+    elif mesher.leaf_clumps_node() is not None:
+        summary += ", clumps"
     return summary
 
 
@@ -97,22 +99,11 @@ class MTreeVariants(bpy.types.Node, MtreeNode):
     status_message: bpy.props.StringProperty(default="")
     status_is_error: bpy.props.BoolProperty(default=False)
 
+    chain_input = ("mt_MeshSocket", "Mesh")
+    chain_output = ("mt_VariantsSocket", "Variants")
+
     def init(self, context):
-        self.add_input("mt_TreeSocket", "Tree", is_property=False)
-
-    def migrate_sockets(self):
-        """Convert nodes saved when this had an output socket.
-
-        init() runs only on creation, so a node loaded from an older .blend
-        keeps whatever sockets it was saved with: the output would leave
-        get_mesher unable to find anything and the Generate button disabled
-        forever, with no indication why.
-        """
-        if self.outputs:
-            self.outputs.clear()
-
-        if not self.inputs:
-            self.add_input("mt_TreeSocket", "Tree", is_property=False)
+        self.add_chain_sockets()
 
     def draw(self, context, layout):
         if self.status_message:
@@ -141,12 +132,10 @@ class MTreeVariants(bpy.types.Node, MtreeNode):
             if mesher.build_bone_rig:
                 from ..export_nodes.foliage_wind_node import (
                     describe_rig_layout,
-                    find_foliage_wind_settings,
+                    foliage_wind_settings_for,
                 )
 
-                rig_layout = describe_rig_layout(
-                    find_foliage_wind_settings(self.get_node_tree())
-                )
+                rig_layout = describe_rig_layout(foliage_wind_settings_for(mesher))
                 mesh_box.label(text=f"Bone rig: {rig_layout}", icon="INFO")
         mesh_box.prop(self, "bake_foliage_streams")
         if not self.bake_foliage_streams:
@@ -167,8 +156,17 @@ class MTreeVariants(bpy.types.Node, MtreeNode):
         props.node_name = self.name
         props.function_name = "generate_variants"
 
+    def output_collection_name(self) -> str:
+        return self.collection_name or "tree_variants"
+
+    def variant_objects(self) -> list:
+        collection = bpy.data.collections.get(self.output_collection_name())
+        if collection is None:
+            return []
+        return [obj for obj in collection.objects if obj.type == "MESH" and not is_lod_object(obj)]
+
     def _get_collection(self):
-        name = self.collection_name or "tree_variants"
+        name = self.output_collection_name()
         collection = bpy.data.collections.get(name)
         if collection is None:
             collection = bpy.data.collections.new(name)
@@ -207,13 +205,13 @@ class MTreeVariants(bpy.types.Node, MtreeNode):
             obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
 
         link_exclusively(obj, collection)
+        self._place(obj, variant_index)
 
         mesher.build_into(obj, seed_offset)
 
         if self.bake_foliage_streams:
             self._bake_foliage(obj.data)
-
-        self._place(obj, variant_index)
+            copy_foliage_streams(obj)
 
         if self.bake_morphs:
             count, message = self._bake_morphs(obj)
@@ -239,10 +237,10 @@ class MTreeVariants(bpy.types.Node, MtreeNode):
         twenty variants means twenty bakes, and a forgotten one produces a file
         that looks fine until the shader reads zeros from it.
         """
-        from ...nodes.export_nodes.foliage_wind_node import find_foliage_wind_settings
+        from ...nodes.export_nodes.foliage_wind_node import foliage_wind_settings_for
         from ...pivot_painter.formats.foliage import FoliageExporter
 
-        settings = dict(find_foliage_wind_settings(self.get_node_tree()))
+        settings = foliage_wind_settings_for(self.get_mesher())
         for key in (
             "build_bone_rig",
             "segments_per_chain",
@@ -255,12 +253,12 @@ class MTreeVariants(bpy.types.Node, MtreeNode):
 
     def _bake_morphs(self, obj):
         from ...nodes.export_nodes.foliage_wind_node import (
-            find_foliage_wind_settings,
+            foliage_wind_settings_for,
             rig_settings,
         )
         from ...pivot_painter.wind_animation import bake_wind_clips, build_rig_for
 
-        settings = find_foliage_wind_settings(self.get_node_tree())
+        settings = foliage_wind_settings_for(self.get_mesher())
 
         rig = build_rig_for(obj.data, settings["segments_per_chain"], rig_settings(settings))
 

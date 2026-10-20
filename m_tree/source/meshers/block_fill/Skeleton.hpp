@@ -44,6 +44,8 @@ struct Segment
 	Vector3 frame_point(const Vector3& local) const;
 };
 
+Vector3 any_perpendicular(const Vector3& axis, const Vector3& preferred);
+
 struct Chain
 {
 	std::vector<int> segments;
@@ -67,6 +69,8 @@ class SegmentAttributes
 	int add_vertex(const Vector3& position, const Segment& segment, float radius,
 	               const Vector3& attachment);
 	void add_unit_quad(const std::array<int, 4>& corners, int material);
+	void add_quad(const std::array<int, 4>& corners, const std::array<Vector2, 4>& uvs,
+	              int material);
 
   private:
 	Mesh& mesh;

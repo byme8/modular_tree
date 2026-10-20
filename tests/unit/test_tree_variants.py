@@ -126,9 +126,7 @@ class TestSeedPropagation:
             if node.name in seen:
                 return {}
             seen.add(node.name)
-            values = {
-                (node.name, s.property_name): s.property_value for s in node.inputs
-            }
+            values = {(node.name, s.property_name): s.property_value for s in node.inputs}
             for child in node.get_child_nodes():
                 values.update(snapshot(child, seen))
             return values
@@ -203,8 +201,6 @@ def test_snapshot():
     ]
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    (ARTIFACT_DIR / "seed_assignment.txt").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8"
-    )
+    (ARTIFACT_DIR / "seed_assignment.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     assert after == authored

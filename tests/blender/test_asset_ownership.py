@@ -12,6 +12,7 @@ import bpy
 import pytest
 
 from python_classes.nodes.base_types.node import SEED_PROPERTY
+from python_classes.nodes.pipeline import CHAIN_SOCKETS
 from python_classes.pivot_painter.tree_asset import (
     armature_name_for,
     find_armature,
@@ -127,7 +128,8 @@ class TestNodeGraph:
         )
         found = variants.get_mesher()
         assert found is not None and found.name == mesher.name
-        assert len(variants.inputs) == 1 and len(variants.outputs) == 0
+        assert [s.bl_idname for s in variants.inputs] == ["mt_MeshSocket"]
+        assert [s.bl_idname for s in variants.outputs] == ["mt_VariantsSocket"]
 
         a = make_mesh_object("inherit_hi")
         b = make_mesh_object("inherit_lo")
@@ -209,9 +211,7 @@ class TestNodeGraph:
     def test_socket_clamp(self, node_tree):
         trunk = node_tree.trunk
 
-        socket = next(
-            (s for s in trunk.inputs if s.bl_idname == "mt_IntSocket"), None
-        )
+        socket = next((s for s in trunk.inputs if s.bl_idname == "mt_IntSocket"), None)
         assert socket is not None, "trunk carries no int socket"
 
         low, high = socket.min_value, socket.max_value
@@ -247,6 +247,35 @@ class TestGenerate:
         mesher.build_tree()
         assert not mesher.status_is_error, mesher.status_message
         assert bpy.context.mode == "OBJECT"
+
+    def test_rigged_variants_keep_their_grid_slot(self, node_tree):
+        """TEST_POINT: the clip bake re-read a stale matrix_world and pulled every
+        variant back to the origin, with its rig left behind at the old slot."""
+        node_tree.add_branch()
+        node_tree.mesher.build_bone_rig = True
+        variants = node_tree.variants
+        variants.variant_count = 3
+        variants.spacing = 10.0
+        variants.collection_name = "layout_variants"
+        variants.bake_morphs = True
+
+        lines = ["# world x of each variant and its rig, per generate", ""]
+        for run in range(2):
+            variants.generate_variants()
+            assert not variants.status_is_error, variants.status_message
+            bpy.context.view_layer.update()
+
+            for index in range(3):
+                obj = bpy.data.objects[f"layout_variants_{index:03d}"]
+                armature = find_armature(obj)
+                mesh_x = obj.matrix_world.translation.x
+                rig_x = armature.matrix_world.translation.x
+                lines.append(f"run {run} variant {index}: mesh {mesh_x:.3f} rig {rig_x:.3f}")
+                assert mesh_x == pytest.approx(index * 10.0)
+                assert rig_x == pytest.approx(index * 10.0)
+
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        (ARTIFACT_DIR / "variant_layout.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class TestEmptyBuild:
@@ -374,13 +403,10 @@ class TestNodeDraw:
         assert set(bpy.data.objects.keys()) == before_objects, "draw created an object"
         assert set(bpy.data.meshes.keys()) == before_meshes, "draw created a mesh"
         assert not orphan.users_collection, "draw linked the object into a collection"
-        assert bpy.context.view_layer.objects.active is not orphan, (
-            "draw changed the active object"
-        )
+        assert bpy.context.view_layer.objects.active is not orphan, "draw changed the active object"
 
 
 class TestWindClipOwnership:
-
     @pytest.mark.parametrize("directions", [4, 8])
     def test_clips_do_not_accumulate(self, node_tree, directions):
         from python_classes.pivot_painter.formats.foliage import FoliageExporter
@@ -397,9 +423,7 @@ class TestWindClipOwnership:
         mesher.build_into(obj, 0)
         FoliageExporter(mesh=obj.data).export()
 
-        rig = build_rig_for(
-            obj.data, mesher.segments_per_chain, mesher._stiffness_settings()
-        )
+        rig = build_rig_for(obj.data, mesher.segments_per_chain, mesher._stiffness_settings())
 
         for _ in range(2):
             count, message = bake_wind_clips(obj, rig, directions=directions)
@@ -429,9 +453,7 @@ class TestWindClipOwnership:
             mesher.build_into(obj, 0)
             FoliageExporter(mesh=obj.data).export()
 
-            rig = build_rig_for(
-                obj.data, mesher.segments_per_chain, mesher._stiffness_settings()
-            )
+            rig = build_rig_for(obj.data, mesher.segments_per_chain, mesher._stiffness_settings())
             bake_wind_clips(obj, rig, directions=4)
 
             armature = find_armature(obj)
@@ -521,17 +543,210 @@ class TestRigCache:
         softer = dict(stiffness, branch_stiffness=0.25)
         assert wind_animation.build_rig_for(obj.data, 4, softer, use_cache=True) is not first
 
-        assert (
-            wind_animation.build_rig_for(obj.data, 4, stiffness, use_cache=False)
-            is not first
-        ), "bake paths must not read the cache"
+        assert wind_animation.build_rig_for(obj.data, 4, stiffness, use_cache=False) is not first, (
+            "bake paths must not read the cache"
+        )
 
         strip_rig(obj)
         assert not wind_animation._rig_cache, "strip_rig left a stale rig cached"
 
 
-class TestExportPayload:
+GRAPH_ARTIFACT_DIR = Path(__file__).parent.parent / "artifacts" / "node_graph"
 
+BLOCK_FILL_VALUES = {
+    "density": 12.5,
+    "scale": 1.25,
+    "roll_variation": 20.0,
+    "seed": 3,
+    "max_polygons": 150000,
+}
+
+
+def reshape_to_legacy(node, inputs=(), outputs=()):
+    for sockets, legacy in ((node.inputs, inputs), (node.outputs, outputs)):
+        for socket in [s for s in sockets if s.bl_idname in CHAIN_SOCKETS]:
+            sockets.remove(socket)
+        for name in legacy:
+            socket = sockets.new("mt_TreeSocket", name)
+            socket.is_property = False
+            sockets.move(len(sockets) - 1, 0)
+
+
+def pin_graph_seeds(tree, seed=7):
+    for node in tree.nodes:
+        for socket in node.inputs:
+            if getattr(socket, "property_name", "") == SEED_PROPERTY:
+                socket.property_value = seed
+
+
+def build_legacy_graph():
+    from conftest import Graph
+
+    tree = bpy.data.node_groups.new("mtree_legacy", "mt_MtreeNodeTree")
+    nodes = {
+        idname: tree.nodes.new(idname)
+        for idname in (
+            "mt_MesherNode",
+            "mt_TrunkNode",
+            "mt_BlockFillNode",
+            "mt_LeafCardsNode",
+            "mt_VariantsNode",
+            "mt_MeshExportNode",
+            "mt_FoliageWindNode",
+        )
+    }
+    mesher, trunk = nodes["mt_MesherNode"], nodes["mt_TrunkNode"]
+
+    reshape_to_legacy(mesher, outputs=["Tree"])
+    reshape_to_legacy(trunk, inputs=["Tree"], outputs=["Tree"])
+    reshape_to_legacy(nodes["mt_LeafCardsNode"], inputs=["Tree"])
+    reshape_to_legacy(nodes["mt_VariantsNode"], inputs=["Tree"])
+    reshape_to_legacy(nodes["mt_MeshExportNode"], inputs=["Tree"])
+    reshape_to_legacy(nodes["mt_FoliageWindNode"], inputs=["Tree"], outputs=["Tree"])
+
+    for idname in (
+        "mt_TrunkNode",
+        "mt_BlockFillNode",
+        "mt_LeafCardsNode",
+        "mt_VariantsNode",
+        "mt_MeshExportNode",
+    ):
+        tree.links.new(mesher.outputs[0], nodes[idname].inputs[0])
+
+    for name, value in BLOCK_FILL_VALUES.items():
+        setattr(nodes["mt_BlockFillNode"], name, value)
+    nodes["mt_FoliageWindNode"].trunk_tip_stiffness = 0.3
+
+    branch = Graph(tree, mesher, trunk, nodes["mt_VariantsNode"]).add_branch()
+    pin_graph_seeds(tree)
+    return tree, {**nodes, "mt_BranchNode": branch}
+
+
+class TestPipeline:
+    def test_legacy_graph_migrates_to_the_same_tree(self, node_tree):
+        from python_classes.nodes import migration, pipeline
+        from python_classes.nodes.base_types.node_tree import GRAPH_VERSION
+        from python_classes.nodes.export_nodes.foliage_wind_node import (
+            foliage_wind_settings_for,
+        )
+
+        node_tree.add_branch()
+        pin_graph_seeds(node_tree.tree)
+        reference = node_tree.mesher
+        reference.mesh_mode = "BLOCKS"
+        for name, value in BLOCK_FILL_VALUES.items():
+            setattr(reference, f"block_{name}", value)
+        cards = node_tree.tree.nodes.new("mt_LeafCardsNode")
+        node_tree.tree.links.new(reference.outputs[0], cards.inputs[0])
+        expected = make_mesh_object("migration_expected")
+        reference.build_into(expected, 0)
+
+        tree, nodes = build_legacy_graph()
+        names = {idname: node.name for idname, node in nodes.items()}
+        assert pipeline.needs_migration(tree)
+
+        assert migration.migrate_tree(tree)
+        links_after = sorted((link.from_node.name, link.to_node.name) for link in tree.links)
+        assert not migration.migrate_tree(tree), "a second migration changed the graph"
+        assert sorted((link.from_node.name, link.to_node.name) for link in tree.links) == (
+            links_after
+        )
+
+        mesher = tree.nodes[names["mt_MesherNode"]]
+        chain = [node.name for node in pipeline.single_tree_chain(mesher)]
+        variants = tree.nodes[names["mt_VariantsNode"]]
+        export = tree.nodes[names["mt_MeshExportNode"]]
+
+        assert tree.graph_version == GRAPH_VERSION
+        assert names["mt_BlockFillNode"] not in tree.nodes
+        assert pipeline.resolve_trunk(mesher)[0].name == names["mt_TrunkNode"]
+        assert pipeline.upstream_node(mesher).name == names["mt_BranchNode"]
+        assert chain == [
+            names["mt_MesherNode"],
+            names["mt_LeafCardsNode"],
+            names["mt_FoliageWindNode"],
+        ]
+        assert pipeline.upstream_node(variants).name == names["mt_FoliageWindNode"]
+        assert pipeline.upstream_node(export).name == names["mt_VariantsNode"]
+        assert not [
+            s for s in tree.nodes[names["mt_TrunkNode"]].inputs if s.bl_idname == "mt_TreeSocket"
+        ]
+        assert mesher.mesh_mode == "BLOCKS"
+        for name, value in BLOCK_FILL_VALUES.items():
+            assert getattr(mesher, f"block_{name}") == pytest.approx(value), name
+        assert foliage_wind_settings_for(mesher)["trunk_tip_stiffness"] == pytest.approx(0.3)
+        assert not pipeline.rejected_links(tree)
+
+        migrated = make_mesh_object("migration_migrated")
+        mesher.build_into(migrated, 0)
+
+        assert len(migrated.data.vertices) == len(expected.data.vertices) > 0
+        assert len(migrated.data.polygons) == len(expected.data.polygons)
+
+        lines = [
+            "# legacy graph: mesher root -> trunk -> branch, Block Fill + Leaf Cards + "
+            "Variants + Mesh Export on the mesher, Foliage Wind floating",
+            "",
+            "links after migration:",
+            *(f"  {source} -> {target}" for source, target in links_after),
+            "",
+            f"single-tree chain: {' -> '.join(chain)}",
+            f"mesh_mode: {mesher.mesh_mode}",
+            *(f"block_{name}: {getattr(mesher, f'block_{name}'):g}" for name in BLOCK_FILL_VALUES),
+            f"vertices expected {len(expected.data.vertices)} "
+            f"migrated {len(migrated.data.vertices)}",
+            f"polygons expected {len(expected.data.polygons)} "
+            f"migrated {len(migrated.data.polygons)}",
+        ]
+        GRAPH_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        (GRAPH_ARTIFACT_DIR / "migration.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        bpy.data.node_groups.remove(tree)
+
+    def test_incompatible_links_are_rejected(self, node_tree):
+        from python_classes.nodes import pipeline
+
+        tree, mesher, variants = node_tree.tree, node_tree.mesher, node_tree.variants
+        node_tree.add_branch()
+
+        cards = tree.nodes.new("mt_LeafCardsNode")
+        stray_branch = tree.nodes.new("mt_BranchNode")
+        cards_after_variants = tree.nodes.new("mt_LeafCardsNode")
+        second_cards = tree.nodes.new("mt_LeafCardsNode")
+
+        pipeline.cancel_rejections()
+        cases = [
+            ("mesher -> leaf cards", mesher, cards, True),
+            ("mesh -> branch tree input", mesher, stray_branch, False),
+            ("variants -> leaf cards", variants, cards_after_variants, False),
+            ("second leaf cards on one mesh output", mesher, second_cards, False),
+        ]
+        for _, source, target, _ in cases:
+            tree.links.new(source.outputs[0], target.inputs[0])
+
+        assert bpy.app.timers.is_registered(pipeline.flush_rejections), (
+            "NodeTree.update scheduled no removal"
+        )
+        assert pipeline.upstream_node(cards_after_variants) is None
+        assert pipeline.chain_stage(mesher, "mt_LeafCardsNode").name == cards.name
+
+        pipeline.flush_rejections()
+        pipeline.cancel_rejections()
+
+        survivors = {(link.from_node.name, link.to_node.name) for link in tree.links}
+        lines = ["# link -> kept after the deferred rejection", ""]
+        for label, source, target, allowed in cases:
+            kept = (source.name, target.name) in survivors
+            lines.append(f"{label}: {'kept' if kept else 'rejected'}")
+            assert kept == allowed, label
+
+        GRAPH_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        (GRAPH_ARTIFACT_DIR / "link_rejection.txt").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+
+class TestExportPayload:
     def test_rig_detection_ignores_selection(self, node_tree):
         from python_classes.pivot_painter.formats.foliage import FoliageExporter
         from python_classes.pivot_painter.wind_animation import (
@@ -550,9 +765,7 @@ class TestExportPayload:
         rigged = make_mesh_object("payload_rigged")
         mesher.build_into(rigged, 0)
         FoliageExporter(mesh=rigged.data).export()
-        rig = build_rig_for(
-            rigged.data, mesher.segments_per_chain, mesher._stiffness_settings()
-        )
+        rig = build_rig_for(rigged.data, mesher.segments_per_chain, mesher._stiffness_settings())
         bake_wind_clips(rigged, rig, directions=4)
 
         for obj in bpy.context.scene.objects:
@@ -581,9 +794,7 @@ def test_snapshot(node_tree):
     assets = []
     for index in range(2):
         name = f"{col.name}_{index:03d}"
-        obj = resolve_mesh_object(name) or bpy.data.objects.new(
-            name, bpy.data.meshes.new(name)
-        )
+        obj = resolve_mesh_object(name) or bpy.data.objects.new(name, bpy.data.meshes.new(name))
         link_exclusively(obj, col)
         mesher.build_into(obj, index * 7919)
         assets.append(obj)
@@ -609,8 +820,6 @@ def test_snapshot(node_tree):
     ]
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    (ARTIFACT_DIR / "asset_ownership.txt").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8"
-    )
+    (ARTIFACT_DIR / "asset_ownership.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     assert len({armature_name_for(o) for o in assets}) == len(assets)

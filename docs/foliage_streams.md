@@ -119,6 +119,25 @@ a = t                               // raw root→tip position
 positions are authored against it — reshaping `a` silently rescales the artist's
 ramp.
 
+**`r` also carries canopy occlusion.** With **Canopy Occlusion** `s` above 0
+(Foliage Wind, default 1), the ramp is multiplied by how much sky each vertex
+sees through the leaf cards:
+
+```
+r *= 1 - s * (1 - sky_exposure)
+```
+
+`sky_exposure` is the same estimate that ranks cards for leaf LODs
+(`sky_exposure` in `LeafCards.cpp`): leaf-card area splatted into a 32-cell grid,
+32 Fibonacci-sphere rays per vertex, mean transmittance. It is evaluated at every
+vertex, bark included, so a card buried in the crown and the trunk under it both
+darken. Rays from points outside the grid are clipped to it, so a trunk base
+below the crown still sees the crown above it.
+
+It is baked for the rest pose and does not follow the wind. It is meant for
+distant LODs on low-end hardware, where the shader multiplies albedo by `r` in
+place of real-time AO; LOD1/LOD2 copy it from LOD0 through `lod0_vertex`.
+
 ## Bounds
 
 Set mesh bounds to the **rest** geometry expanded by the wind reach, not the rest
@@ -159,7 +178,13 @@ shader's own debug view, so a channel checked here and in-engine mean the same
 thing:
 
 `1` stiffness, `2` phase, `3` occlusion, `4` translucency, `5` normal blend,
-`6` tint, `7` blade height, `8` structure.
+`6` tint, `7` blade height, `8` structure, `9` canopy AO.
+
+`9` draws `r` in grey rather than on the viridis ramp: it is the shading a
+low-end material applies, so it previews how the distant tree will look. It
+appears without a bake, because the debug view computes every channel through
+`FoliageExporter.compute_streams`, the same path the bake writes. That path
+also gives leaf cards their leaf colours, which the old preview did not.
 
 **Check phase first.** It should render as flat constant patches, one per branch
 chain. Any gradient inside a single branch is the defect described above. The

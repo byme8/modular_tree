@@ -1,4 +1,3 @@
-
 from pathlib import Path
 
 import numpy as np
@@ -7,14 +6,14 @@ from foliage_bones import (
     ANTIPARALLEL_BAND,
     BLEND_BAND,
     DEFAULT_SEGMENTS_PER_CHAIN,
+    _chain_table,
     build_rig,
     deform_vertices,
-    pose_rig,
     measure_rest_pose_error,
     pack_bone_uv,
+    pose_rig,
     resolve_chain_parents,
     validate_rig,
-    _chain_table,
 )
 
 ARTIFACT_DIR = Path(__file__).parent.parent / "artifacts" / "foliage_bones"
@@ -71,7 +70,6 @@ def make_synthetic_tree():
 
 
 class TestSegmentationSweep:
-
     def test_segmentation_and_blending_across_parameters(self):
         extent = 4.0
         base = np.array([0.0, 0.0, 0.0])
@@ -155,7 +153,6 @@ class TestSegmentationSweep:
 
 
 class TestTopology:
-
     def test_parents_are_recovered_and_ordered(self):
         tree = make_synthetic_tree()
 
@@ -228,7 +225,6 @@ class TestTopology:
 
 
 class TestRigDepth:
-
     def test_chains_below_rig_depth_ride_their_ancestor_bone(self):
         tree = make_synthetic_tree()
         ids = tree["stem_ids"].astype(int)
@@ -270,9 +266,7 @@ class TestRigDepth:
                 else:
                     assert own > 0
 
-            lines.append(
-                f"{rig_depth} | {rig.bone_count} | " + " | ".join(per_stem)
-            )
+            lines.append(f"{rig_depth} | {rig.bone_count} | " + " | ".join(per_stem))
 
             matrices = pose_rig(rig, 0.0, 1.0)
             posed = deform_vertices(rig, positions, matrices)
@@ -287,7 +281,6 @@ class TestRigDepth:
 
 
 class TestBinding:
-
     def test_every_vertex_binds_soundly(self):
         tree = make_synthetic_tree()
         rig = build_rig(**tree)
@@ -410,7 +403,6 @@ def _tip_direction(rig, matrices, stem_id):
 
 
 class TestWindPose:
-
     @pytest.mark.parametrize(
         "label,trunk_base,trunk_tip",
         [("soft_trunk", 0.1, 0.0), ("default_trunk", 1.0, 0.6)],
@@ -442,13 +434,11 @@ class TestWindPose:
         keys = sorted(samples)
         jumps = [
             float(np.linalg.norm(samples[b] - samples[a], axis=1).max())
-            for a, b in zip(keys, keys[1:])
+            for a, b in zip(keys, keys[1:], strict=False)
         ]
         worst_jump = max(jumps)
         worst_at = keys[jumps.index(worst_jump) + 1]
-        peak = max(
-            float(np.linalg.norm(samples[d] - positions, axis=1).max()) for d in keys
-        )
+        peak = max(float(np.linalg.norm(samples[d] - positions, axis=1).max()) for d in keys)
 
         def interpolation_error(directions):
             spacing = 360.0 / directions
@@ -461,12 +451,8 @@ class TestWindPose:
                 for fraction in np.linspace(0.0, 1.0, 9):
                     degrees = i * spacing + fraction * spacing
                     truth = deform_vertices(rig, positions, pose_rig(rig, degrees, 1.0))
-                    blend = (1.0 - fraction) * baked[i] + fraction * baked[
-                        (i + 1) % directions
-                    ]
-                    worst = max(
-                        worst, float(np.linalg.norm(truth - blend, axis=1).max())
-                    )
+                    blend = (1.0 - fraction) * baked[i] + fraction * baked[(i + 1) % directions]
+                    worst = max(worst, float(np.linalg.norm(truth - blend, axis=1).max()))
             return worst
 
         counts = (8, 16, 32)

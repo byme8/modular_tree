@@ -46,8 +46,13 @@ def get_trunk_length_from_node_tree(node_tree) -> float:
     if node_tree is None:
         return 10.0
 
-    for node in node_tree.nodes:
-        if node.bl_idname == "mt_TrunkNode":
+    from ..nodes.pipeline import MESHER_ID, resolve_trunk
+
+    for mesher in node_tree.nodes:
+        if mesher.bl_idname != MESHER_ID:
+            continue
+        node = resolve_trunk(mesher)[0]
+        if node is not None:
             # Find the length socket
             for socket in node.inputs:
                 if hasattr(socket, "property_name") and socket.property_name == "length":

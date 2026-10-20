@@ -137,10 +137,23 @@ class MTreeFoliageWind(bpy.types.Node, MtreeNode):
         min=0.0,
         max=1.0,
     )
+    sky_occlusion: bpy.props.FloatProperty(
+        name="Canopy Occlusion",
+        description=(
+            "How much the leaf canopy darkens what it hides from the sky, baked "
+            "into the occlusion channel for bark and leaf cards alike. 0 keeps "
+            "only the along-branch ramp"
+        ),
+        default=1.0,
+        min=0.0,
+        max=1.0,
+    )
+
+    chain_input = ("mt_MeshSocket", "Mesh")
+    chain_output = ("mt_MeshSocket", "Mesh")
 
     def init(self, context):
-        self.add_input("mt_TreeSocket", "Tree", is_property=False)
-        self.add_output("mt_TreeSocket", "Tree")
+        self.add_chain_sockets()
 
     def draw(self, context, layout):
         wind_box = layout.box()
@@ -178,6 +191,7 @@ class MTreeFoliageWind(bpy.types.Node, MtreeNode):
         shading_box = layout.box()
         shading_box.label(text="Shading")
         shading_box.prop(self, "occlusion_base")
+        shading_box.prop(self, "sky_occlusion")
         shading_box.prop(self, "translucency_tip")
         shading_box.prop(self, "normal_blend")
 
@@ -193,6 +207,7 @@ class MTreeFoliageWind(bpy.types.Node, MtreeNode):
             "branch_stiffness": self.branch_stiffness,
             "junction_falloff": self.junction_falloff,
             "occlusion_base": self.occlusion_base,
+            "sky_occlusion": self.sky_occlusion,
             "translucency_tip": self.translucency_tip,
             "normal_blend": self.normal_blend,
             "build_bone_rig": self.use_bone_rig,
@@ -208,6 +223,7 @@ DEFAULT_FOLIAGE_SETTINGS = {
     "branch_stiffness": 1.0,
     "junction_falloff": 0.6,
     "occlusion_base": 0.25,
+    "sky_occlusion": 1.0,
     "translucency_tip": 0.0,
     "normal_blend": 0.0,
     "build_bone_rig": False,
@@ -238,17 +254,14 @@ def describe_rig_layout(settings: dict) -> str:
     )
 
 
-def find_foliage_wind_settings(node_tree) -> dict:
-    """Find the foliage wind settings in a node tree.
+def foliage_wind_node_for(mesher):
+    from ..pipeline import FOLIAGE_WIND_ID, chain_stage
 
-    Falls back to defaults when no such node is present, so the foliage export
-    stays usable without one.
-    """
-    if node_tree is None:
+    return chain_stage(mesher, FOLIAGE_WIND_ID)
+
+
+def foliage_wind_settings_for(mesher) -> dict:
+    node = foliage_wind_node_for(mesher)
+    if node is None:
         return dict(DEFAULT_FOLIAGE_SETTINGS)
-
-    for node in node_tree.nodes:
-        if node.bl_idname == MTreeFoliageWind.bl_idname:
-            return node.get_settings()
-
-    return dict(DEFAULT_FOLIAGE_SETTINGS)
+    return node.get_settings()

@@ -1,0 +1,5 @@
+# fixture graph (trunk + sparse branch) + default Leaf Cards, canopy occlusion 1.0
+# exposure = baked occlusion / ramp-only occlusion
+
+cards 1120 inner mean 0.2347 outer mean 0.4055
+bark min 0.0129 mean 0.6808 max 1.0000

@@ -9,28 +9,39 @@ class MTreeNodeCategory(NodeCategory):
 
 
 node_categories = [
-    # identifier, label, items list
     MTreeNodeCategory(
-        "Mesher",
-        "Mesher",
-        items=[
-            NodeItem("mt_MesherNode"),
-            NodeItem("mt_VariantsNode"),
-        ],
-    ),
-    MTreeNodeCategory(
-        "Trunk",
-        "Trunk",
+        "Structure",
+        "Structure",
         items=[
             NodeItem("mt_TrunkNode"),
+            NodeItem("mt_BranchNode"),
+            NodeItem("mt_GrowthNode"),
+            NodeItem("mt_PipeRadiusNode"),
         ],
     ),
     MTreeNodeCategory(
-        "Branch",
-        "Branch",
+        "Mesh",
+        "Mesh",
         items=[
-            NodeItem("mt_BranchNode"),
-            NodeItem("mt_GrowthNode"),
+            NodeItem("mt_MesherNode"),
+            NodeItem("mt_LeafCardsNode"),
+            NodeItem("mt_LeafClumpsNode"),
+        ],
+    ),
+    MTreeNodeCategory(
+        "Wind",
+        "Wind",
+        items=[
+            NodeItem("mt_FoliageWindNode"),
+        ],
+    ),
+    MTreeNodeCategory(
+        "Output",
+        "Output",
+        items=[
+            NodeItem("mt_VariantsNode"),
+            NodeItem("mt_MeshExportNode"),
+            NodeItem("mt_FoliageExportNode"),
         ],
     ),
     MTreeNodeCategory(
@@ -41,35 +52,11 @@ node_categories = [
         ],
     ),
     MTreeNodeCategory(
-        "Modifiers",
-        "Modifiers",
-        items=[
-            NodeItem("mt_PipeRadiusNode"),
-        ],
-    ),
-    MTreeNodeCategory(
         "Property",
         "Property",
         items=[
             NodeItem("mt_RandomPropertyNode"),
             NodeItem("mt_RampPropertyNode"),
-        ],
-    ),
-    MTreeNodeCategory(
-        "Surface",
-        "Surface",
-        items=[
-            NodeItem("mt_BlockFillNode"),
-            NodeItem("mt_LeafCardsNode"),
-        ],
-    ),
-    MTreeNodeCategory(
-        "Export",
-        "Export",
-        items=[
-            NodeItem("mt_FoliageWindNode"),
-            NodeItem("mt_FoliageExportNode"),
-            NodeItem("mt_MeshExportNode"),
         ],
     ),
 ]

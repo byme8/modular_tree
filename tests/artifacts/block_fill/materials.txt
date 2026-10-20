@@ -1,0 +1,3 @@
+slots ['Bark', 'Leaf']
+used by polygons ['Bark', 'Leaf']
+after user assigns slot 0 and rebuilds ['UserBark', 'Leaf']

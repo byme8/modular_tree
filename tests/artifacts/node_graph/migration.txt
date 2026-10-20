@@ -1,0 +1,19 @@
+# legacy graph: mesher root -> trunk -> branch, Block Fill + Leaf Cards + Variants + Mesh Export on the mesher, Foliage Wind floating
+
+links after migration:
+  Branches -> Tree Mesher
+  Foliage Wind -> Tree Variants
+  Leaf Cards -> Foliage Wind
+  Tree Mesher -> Leaf Cards
+  Tree Variants -> Mesh Export
+  Trunk -> Branches
+
+single-tree chain: Tree Mesher -> Leaf Cards -> Foliage Wind
+mesh_mode: BLOCKS
+block_density: 12.5
+block_scale: 1.25
+block_roll_variation: 20
+block_seed: 3
+block_max_polygons: 150000
+vertices expected 16104 migrated 16104
+polygons expected 7598 migrated 7598

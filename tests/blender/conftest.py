@@ -56,16 +56,11 @@ class Graph:
 
 @pytest.fixture
 def node_tree():
-    """A minimal mesher -> trunk graph, with a Variants node attached.
-
-    Variants shares the mesher's output socket, so the mesher's first output
-    link is not necessarily the trunk.
-    """
     tree = bpy.data.node_groups.new("mtree_test", "mt_MtreeNodeTree")
 
     mesher = tree.nodes.new("mt_MesherNode")
     trunk = tree.nodes.new("mt_TrunkNode")
-    tree.links.new(mesher.outputs[0], trunk.inputs[0])
+    tree.links.new(trunk.outputs[0], mesher.inputs[0])
 
     variants = tree.nodes.new("mt_VariantsNode")
     tree.links.new(mesher.outputs[0], variants.inputs[0])

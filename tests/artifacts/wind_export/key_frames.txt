@@ -1,0 +1,14 @@
+stops 0.00, 0.25, 1.00
+
+wexp_000_rig_Wind_000 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_000_rig_Wind_090 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_000_rig_Wind_180 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_000_rig_Wind_270 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_001_rig_Wind_000 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_001_rig_Wind_090 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_001_rig_Wind_180 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_001_rig_Wind_270 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_002_rig_Wind_000 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_002_rig_Wind_090 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_002_rig_Wind_180 frames [1, 2, 5] interpolation ['LINEAR']
+wexp_002_rig_Wind_270 frames [1, 2, 5] interpolation ['LINEAR']

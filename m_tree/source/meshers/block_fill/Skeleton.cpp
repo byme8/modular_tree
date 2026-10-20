@@ -152,6 +152,20 @@ Vector3 Segment::frame_point(const Vector3& local) const
 	return start + x * local[0] + y * local[1] + z * local[2];
 }
 
+Vector3 any_perpendicular(const Vector3& axis, const Vector3& preferred)
+{
+	Vector3 candidate = preferred - axis * preferred.dot(axis);
+	if (candidate.norm() > 1e-4f)
+		return candidate.normalized();
+	for (const Vector3& fallback : {Vector3{1, 0, 0}, Vector3{0, 1, 0}, Vector3{0, 0, 1}})
+	{
+		candidate = fallback - axis * fallback.dot(axis);
+		if (candidate.norm() > 1e-4f)
+			return candidate.normalized();
+	}
+	return preferred;
+}
+
 Skeleton Skeleton::from_tree(Tree& tree)
 {
 	Skeleton skeleton;
@@ -212,13 +226,17 @@ int SegmentAttributes::add_vertex(const Vector3& position, const Segment& segmen
 
 void SegmentAttributes::add_unit_quad(const std::array<int, 4>& corners, int material)
 {
+	add_quad(corners, {Vector2{0, 0}, Vector2{1, 0}, Vector2{1, 1}, Vector2{0, 1}}, material);
+}
+
+void SegmentAttributes::add_quad(const std::array<int, 4>& corners,
+                                 const std::array<Vector2, 4>& uvs, int material)
+{
 	int polygon = mesh.add_polygon();
 	mesh.polygons[polygon] = corners;
 	int uv = (int)mesh.uvs.size();
-	mesh.uvs.emplace_back(0, 0);
-	mesh.uvs.emplace_back(1, 0);
-	mesh.uvs.emplace_back(1, 1);
-	mesh.uvs.emplace_back(0, 1);
+	for (const Vector2& corner_uv : uvs)
+		mesh.uvs.push_back(corner_uv);
 	mesh.uv_loops[polygon] = {uv, uv + 1, uv + 2, uv + 3};
 	mesh.material_indices[polygon] = material;
 }

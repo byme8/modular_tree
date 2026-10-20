@@ -9,11 +9,12 @@ SEED_PROPERTY = "seed"
 
 
 class MtreeNode:
+    chain_input = None
+    chain_output = None
+
     @classmethod
     def poll(cls, nodeTree: NodeTree) -> bool:
         return nodeTree.bl_idname == "mt_MtreeNodeTree"
-
-    # utility functions ----------------------------
 
     def get_node_tree(self) -> NodeTree:
         return self.id_data
@@ -25,15 +26,11 @@ class MtreeNode:
                 child_nodes.append(link.to_node)
         return child_nodes
 
-    def get_neighbours(self) -> list:
-        neighbours = []
-        for socket in self.inputs:
-            for link in socket.links:
-                neighbours.append(link.from_node)
-        for socket in self.outputs:
-            for link in socket.links:
-                neighbours.append(link.to_node)
-        return neighbours
+    def add_chain_sockets(self) -> None:
+        if self.chain_input is not None:
+            self.add_input(*self.chain_input, is_property=False)
+        if self.chain_output is not None:
+            self.add_output(*self.chain_output, is_property=False)
 
     def add_input(self, socket_type: str, name: str, **kwargs) -> NodeSocket:
         socket = self.inputs.new(socket_type, name)
@@ -47,47 +44,10 @@ class MtreeNode:
             setattr(socket, key, value)
         return socket
 
-    def get_mesher_rec(self, seen_nodes: set) -> MtreeNode | None:
-        if self.bl_idname == "mt_MesherNode":
-            return self
-
-        seen_nodes.add(self.name)
-
-        for neighbour in self.get_neighbours():
-            if neighbour.name in seen_nodes:
-                continue
-            mesher = neighbour.get_mesher_rec(seen_nodes)
-            if mesher is not None:
-                return mesher
-        return None
-
     def get_mesher(self) -> MtreeNode | None:
-        """Find the mesher node connected to this node via BFS.
+        from ..pipeline import find_mesher
 
-        Uses node_tree.links instead of socket.links for reliable access
-        during property update callbacks.
-        """
-        node_tree = self.id_data
-        # Build adjacency map from the node tree's link collection
-        adjacency: dict[str, set[str]] = {}
-        for link in node_tree.links:
-            a, b = link.from_node.name, link.to_node.name
-            adjacency.setdefault(a, set()).add(b)
-            adjacency.setdefault(b, set()).add(a)
-
-        # BFS from this node
-        seen = {self.name}
-        queue = [self.name]
-        while queue:
-            name = queue.pop(0)
-            node = node_tree.nodes.get(name)
-            if node and node.bl_idname == "mt_MesherNode":
-                return node
-            for neighbor_name in adjacency.get(name, set()):
-                if neighbor_name not in seen:
-                    seen.add(neighbor_name)
-                    queue.append(neighbor_name)
-        return None
+        return find_mesher(self)
 
     # Node events, don't override ----------------
 
@@ -107,6 +67,8 @@ class MtreeNode:
 
 
 class MtreeFunctionNode(MtreeNode):
+    chain_input = ("mt_TreeSocket", "Tree")
+    chain_output = ("mt_TreeSocket", "Tree")
     exposed_parameters = []  # List defined for each sub class
     advanced_parameters = []
     tree_function = None  # tree function type, as defined in m_tree. Should be overriden

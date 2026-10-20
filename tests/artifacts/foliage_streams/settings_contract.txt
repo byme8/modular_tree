@@ -10,6 +10,7 @@ normal_blend 0.0 compute_all_streams
 occlusion_base 0.25 compute_all_streams
 rig_depth 1 build_rig
 segments_per_chain 4 build_rig
+sky_occlusion 1.0 compute_all_streams
 translucency_tip 0.0 compute_all_streams
 trunk_base_stiffness 1.0 build_rig, compute_all_streams
 trunk_tip_stiffness 1.0 build_rig, compute_all_streams

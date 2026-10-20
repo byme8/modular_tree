@@ -1,0 +1,20 @@
+format FBX separate True
+
+wlod_000_LOD0.fbx
+  wlod_000: 9522 triangles
+  wlod_000_rig: 6 bones, 4 takes
+wlod_000_LOD1.fbx
+  wlod_000_LOD1: 7282 triangles
+  wlod_000_rig: 6 bones, 0 takes
+wlod_000_LOD2.fbx
+  wlod_000_LOD2: 5938 triangles
+  wlod_000_rig: 6 bones, 0 takes
+wlod_001_LOD0.fbx
+  wlod_001: 13192 triangles
+  wlod_001_rig: 6 bones, 4 takes
+wlod_001_LOD1.fbx
+  wlod_001_LOD1: 9632 triangles
+  wlod_001_rig: 6 bones, 0 takes
+wlod_001_LOD2.fbx
+  wlod_001_LOD2: 7496 triangles
+  wlod_001_rig: 6 bones, 0 takes

@@ -1,0 +1,9 @@
+# fixture graph (trunk + sparse branch) + default Leaf Cards, manifold
+
+LOD0 verts 11644 polys 4761 cards 1120 leaf_area 89.6000
+LOD1 verts 7164 polys 3641 cards 560 leaf_area 89.6000
+LOD2 verts 4476 polys 2969 cards 224 leaf_area 89.6000
+
+LOD1 area ratio 1.0000
+LOD2 area ratio 1.0000
+mean card distance to crown centre: kept in LOD2 2.3950, culled 1.3466

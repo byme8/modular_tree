@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -22,7 +21,6 @@ SOURCE_VECTOR_ATTRIBUTES = ["pivot_position", "direction"]
 
 
 class FoliageRigExporter:
-
     def __init__(
         self,
         mesh: bpy.types.Mesh,
@@ -76,9 +74,7 @@ class FoliageRigExporter:
         if self.rig.bone_count == 0:
             from ... import diagnostics
 
-            diagnostics.warn(
-                "  rig produced 0 bones from %s", diagnostics.describe_mesh(self.mesh)
-            )
+            diagnostics.warn("  rig produced 0 bones from %s", diagnostics.describe_mesh(self.mesh))
             return ExportResult(
                 success=False,
                 message="No branch chains found; nothing to rig.",
@@ -178,4 +174,3 @@ class FoliageRigExporter:
                 if not has_value[vert_idx]:
                     target[vert_idx] = loop_data[loop_idx]
                     has_value[vert_idx] = True
-

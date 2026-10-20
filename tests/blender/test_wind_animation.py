@@ -3,6 +3,7 @@ from pathlib import Path
 import bpy
 import numpy as np
 import pytest
+from test_asset_ownership import make_mesh_object
 
 from python_classes.pivot_painter.foliage_bones import deform_vertices, pose_rig
 from python_classes.pivot_painter.formats.foliage import FoliageExporter
@@ -11,8 +12,8 @@ from python_classes.pivot_painter.wind_animation import (
     action_name,
     bake_wind_clips,
     build_rig_for,
+    stop_frame,
 )
-from test_asset_ownership import make_mesh_object
 
 ARTIFACT_DIR = Path(__file__).parent.parent / "artifacts" / "wind_animation"
 
@@ -43,22 +44,19 @@ def rigged_tree(request, node_tree):
     node_tree.add_branch()
 
     if request.param == "blocks_cards":
-        for idname in ("mt_BlockFillNode", "mt_LeafCardsNode"):
-            node = node_tree.tree.nodes.new(idname)
-            node_tree.tree.links.new(mesher.outputs[0], node.inputs[0])
+        mesher.mesh_mode = "BLOCKS"
+        cards = node_tree.tree.nodes.new("mt_LeafCardsNode")
+        node_tree.tree.links.new(mesher.outputs[0], cards.inputs[0])
 
     obj = make_mesh_object(f"wind_clips_{request.param}")
     mesher.build_into(obj, 0)
     FoliageExporter(mesh=obj.data).export()
 
-    rig = build_rig_for(
-        obj.data, mesher.segments_per_chain, mesher._stiffness_settings()
-    )
+    rig = build_rig_for(obj.data, mesher.segments_per_chain, mesher._stiffness_settings())
     return obj, rig, request.param
 
 
 class TestWindClips:
-
     def test_playback_matches_the_solver(self, rigged_tree):
         obj, rig, surface = rigged_tree
         rest = rest_vertices(obj.data)
@@ -81,11 +79,10 @@ class TestWindClips:
         worst = 0.0
         for index in range(directions):
             angle = index * step
-            armature.animation_data.action = bpy.data.actions[
-                action_name(armature, angle)
-            ]
+            armature.animation_data.action = bpy.data.actions[action_name(armature, angle)]
 
-            for frame, strength in enumerate(STRENGTH_STOPS, start=1):
+            for strength in STRENGTH_STOPS:
+                frame = stop_frame(strength)
                 bpy.context.scene.frame_set(frame)
 
                 played = evaluated_vertices(obj)
@@ -116,7 +113,7 @@ class TestWindClips:
 
         armature = obj.parent
         armature.animation_data.action = bpy.data.actions[action_name(armature, 0.0)]
-        bpy.context.scene.frame_set(1)
+        bpy.context.scene.frame_set(stop_frame(0.0))
 
         assert float(np.abs(evaluated_vertices(obj) - rest).max()) < 1e-4
 

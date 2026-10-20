@@ -1,0 +1,6 @@
+# link -> kept after the deferred rejection
+
+mesher -> leaf cards: kept
+mesh -> branch tree input: rejected
+variants -> leaf cards: rejected
+second leaf cards on one mesh output: rejected

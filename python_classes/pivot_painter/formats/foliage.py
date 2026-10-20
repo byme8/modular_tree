@@ -28,6 +28,35 @@ LEAF_ATTACHMENT_ATTRIBUTE = "leaf_attachment"
 LEAF_MATERIAL_INDEX = 1
 
 
+def leaf_sky_exposure(mesh: bpy.types.Mesh) -> np.ndarray | None:
+    polygon_count = len(mesh.polygons)
+    materials = np.zeros(polygon_count, dtype=np.int32)
+    mesh.polygons.foreach_get("material_index", materials)
+    leaves = materials == LEAF_MATERIAL_INDEX
+    if not np.any(leaves):
+        return None
+
+    centres = np.zeros(polygon_count * 3, dtype=np.float32)
+    mesh.polygons.foreach_get("center", centres)
+    areas = np.zeros(polygon_count, dtype=np.float64)
+    mesh.polygons.foreach_get("area", areas)
+    positions = np.zeros(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", positions)
+
+    from ...m_tree_wrapper import lazy_m_tree as m_tree
+
+    leaf_areas = areas[leaves]
+    return np.asarray(
+        m_tree.sky_exposure(
+            centres.reshape(-1, 3)[leaves],
+            leaf_areas,
+            float(np.sqrt(leaf_areas.max())),
+            positions.reshape(-1, 3),
+        ),
+        dtype=np.float64,
+    )
+
+
 class FoliageExporter:
     """Writes foliage wind and shading streams onto a tree mesh.
 
@@ -36,7 +65,7 @@ class FoliageExporter:
         uv1.y  phase           constant per branch chain, [0, 1)
         uv2.x  blade height    branch chain length in metres
         uv2.y  unused          0
-        color.r occlusion      dark root to lit tip
+        color.r occlusion      dark root to lit tip, times canopy sky exposure
         color.g translucency   root to tip transmission
         color.b normal blend   geometric to flat-up, constant
         color.a tint ramp      raw normalised root to tip position
@@ -59,8 +88,10 @@ class FoliageExporter:
         trunk_tip_stiffness: float = 1.0,
         branch_stiffness: float = 1.0,
         junction_falloff: float = 0.6,
+        sky_occlusion: float = 1.0,
     ):
         self.mesh = mesh
+        self.sky_occlusion = sky_occlusion
         self.occlusion_base = occlusion_base
         self.translucency_tip = translucency_tip
         self.normal_blend = normal_blend
@@ -75,9 +106,28 @@ class FoliageExporter:
         if validation_error:
             return validation_error
 
+        streams = self.compute_streams()
+
+        # Slot 0 is the mesher's bark parameterisation, which the base map is
+        # authored against. Wind must be uv1 and height uv2 for the engine to
+        # find them.
+        self._write_uv_layer(self.WIND_UV_NAME, streams["wind_uv"], slot=1)
+        self._write_uv_layer(self.HEIGHT_UV_NAME, streams["height_uv"], slot=2)
+        self._write_color_layer(streams["colors"])
+
+        return ExportResult(
+            success=True,
+            message=(
+                f"Wrote foliage streams: {self.WIND_UV_NAME}, "
+                f"{self.HEIGHT_UV_NAME}, {self.COLOR_NAME}. "
+                "Expand mesh bounds by the wind reach before instancing."
+            ),
+        )
+
+    def compute_streams(self) -> dict:
         source = self._read_source_attributes()
         leaf_mask, leaf_attachments = self._read_leaf_cards(len(source["positions"]))
-        streams = compute_all_streams(
+        return compute_all_streams(
             vertex_positions=source["positions"],
             stem_ids=source["stem_id"],
             branch_extents=source["branch_extent"],
@@ -94,22 +144,8 @@ class FoliageExporter:
             junction_falloff=self.junction_falloff,
             leaf_mask=leaf_mask,
             leaf_attachments=leaf_attachments,
-        )
-
-        # Slot 0 is the mesher's bark parameterisation, which the base map is
-        # authored against. Wind must be uv1 and height uv2 for the engine to
-        # find them.
-        self._write_uv_layer(self.WIND_UV_NAME, streams["wind_uv"], slot=1)
-        self._write_uv_layer(self.HEIGHT_UV_NAME, streams["height_uv"], slot=2)
-        self._write_color_layer(streams["colors"])
-
-        return ExportResult(
-            success=True,
-            message=(
-                f"Wrote foliage streams: {self.WIND_UV_NAME}, "
-                f"{self.HEIGHT_UV_NAME}, {self.COLOR_NAME}. "
-                "Expand mesh bounds by the wind reach before instancing."
-            ),
+            sky_exposure=leaf_sky_exposure(self.mesh) if self.sky_occlusion > 0.0 else None,
+            sky_occlusion=self.sky_occlusion,
         )
 
     def validate(self) -> ExportResult | None:

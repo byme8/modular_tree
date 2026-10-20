@@ -12,6 +12,7 @@ import bpy
 from ...pivot_painter.tree_asset import find_armature, resolve_mesh_object
 from ..base_types.node import MtreeNode
 from ..debounce import schedule_preview
+from ..pipeline import VARIANTS_ID, upstream_node
 
 
 def on_update_preview(node, context):
@@ -48,8 +49,10 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
     status_message: bpy.props.StringProperty(default="")
     status_is_error: bpy.props.BoolProperty(default=False)
 
+    chain_input = ("mt_MeshSocket", "Source")
+
     def init(self, context):
-        self.add_input("mt_TreeSocket", "Tree", is_property=False)
+        self.add_chain_sockets()
 
     def draw(self, context, layout):
         if self.status_message:
@@ -59,18 +62,15 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
             status_row.label(text=self.status_message, icon=icon)
 
         from .foliage_wind_node import (
-            MTreeFoliageWind,
             describe_rig_layout,
-            find_foliage_wind_settings,
+            foliage_wind_node_for,
+            foliage_wind_settings_for,
         )
 
-        settings = find_foliage_wind_settings(self.get_node_tree())
+        mesher = self.get_mesher()
+        settings = foliage_wind_settings_for(mesher)
 
-        has_wind_node = any(
-            node.bl_idname == MTreeFoliageWind.bl_idname
-            for node in self.get_node_tree().nodes
-        )
-        if not has_wind_node:
+        if foliage_wind_node_for(mesher) is None:
             layout.label(text="No Foliage Wind node; using defaults", icon="INFO")
 
         if settings["build_bone_rig"]:
@@ -105,13 +105,26 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
     def _has_valid_input(self):
         return self.get_mesher() is not None
 
+    def _variants_source(self):
+        source = upstream_node(self)
+        if source is not None and source.bl_idname == VARIANTS_ID:
+            return source
+        return None
+
     def _get_tree_object(self):
-        mesher = self.get_mesher()
-        if mesher is None:
+        if self._variants_source() is not None:
             return None
-        if not hasattr(mesher, "tree_object") or not mesher.tree_object:
+        mesher = self.get_mesher()
+        if mesher is None or not mesher.tree_object:
             return None
         return resolve_mesh_object(mesher.tree_object)
+
+    def _source_objects(self):
+        variants = self._variants_source()
+        if variants is not None:
+            return variants.variant_objects()
+        obj = self._get_tree_object()
+        return [] if obj is None else [obj]
 
     def _armature(self):
         obj = self._get_tree_object()
@@ -140,9 +153,9 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
         if obj is None or armature is None:
             return
 
-        from .foliage_wind_node import find_foliage_wind_settings, rig_settings
+        from .foliage_wind_node import foliage_wind_settings_for, rig_settings
 
-        settings = find_foliage_wind_settings(self.get_node_tree())
+        settings = foliage_wind_settings_for(self.get_mesher())
 
         rig = build_rig_for(
             obj.data,
@@ -157,23 +170,22 @@ class MTreeFoliageExport(bpy.types.Node, MtreeNode):
         self.status_message = ""
         self.status_is_error = False
 
-        obj = self._get_tree_object()
-        if obj is None:
+        objects = self._source_objects()
+        if not objects:
             self.status_message = "No tree object found. Generate tree first."
             self.status_is_error = True
             return
 
-        from .foliage_wind_node import find_foliage_wind_settings
+        from .foliage_wind_node import foliage_wind_settings_for
 
-        settings = find_foliage_wind_settings(self.get_node_tree())
+        settings = foliage_wind_settings_for(self.get_mesher())
 
-        result = bpy.ops.mtree.export_foliage(
-            "EXEC_DEFAULT",
-            object_name=obj.name,
-            **settings,
-        )
+        results = [
+            bpy.ops.mtree.export_foliage("EXEC_DEFAULT", object_name=obj.name, **settings)
+            for obj in objects
+        ]
 
-        if result == {"FINISHED"}:
+        if all(result == {"FINISHED"} for result in results):
             if settings["build_bone_rig"] and self._armature() is not None:
                 self.preview_wind_strength = 0.0
                 self.status_message = "Baked. Drag Wind Strength to preview."

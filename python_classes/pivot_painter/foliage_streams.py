@@ -32,6 +32,7 @@ def compute_stem_id_hash(stem_ids: NDArray[np.floating]) -> NDArray[np.floating]
     """
     return np.mod(stem_ids * GOLDEN_RATIO_CONJUGATE, 1.0)
 
+
 # A vertex whose along-chain position is within this fraction of the chain base
 # is treated as rooted, and its stiffness is pinned to exactly 1.0.
 ROOTED_EPSILON = 1e-4
@@ -176,8 +177,7 @@ def compute_stiffness(
         # Interpolate along the trunk rather than by radius, so the trunk can
         # bend even though it is the thickest wood on the tree.
         stiffness[trunk] = (
-            trunk_base_stiffness
-            + (trunk_tip_stiffness - trunk_base_stiffness) * position[trunk]
+            trunk_base_stiffness + (trunk_tip_stiffness - trunk_base_stiffness) * position[trunk]
         )
 
         # Step each level down from its parent by a bounded amount.
@@ -484,6 +484,17 @@ def compute_leaf_colors(
     )
 
 
+def apply_sky_occlusion(
+    colors: NDArray[np.floating],
+    sky_exposure: NDArray[np.floating],
+    strength: float,
+) -> NDArray[np.floating]:
+    exposure = np.clip(np.asarray(sky_exposure, dtype=np.float64).ravel(), 0.0, 1.0)
+    shaded = np.asarray(colors, dtype=np.float64).reshape(-1, 4).copy()
+    shaded[:, 0] *= 1.0 - strength * (1.0 - exposure)
+    return shaded.ravel()
+
+
 def compute_wind_expanded_bounds(
     vertex_positions: NDArray[np.floating],
     blade_height: NDArray[np.floating],
@@ -530,6 +541,8 @@ def compute_all_streams(
     junction_falloff: float = JUNCTION_FALLOFF,
     leaf_mask: NDArray[np.bool_] | None = None,
     leaf_attachments: NDArray[np.floating] | None = None,
+    sky_exposure: NDArray[np.floating] | None = None,
+    sky_occlusion: float = 0.0,
 ) -> dict:
     """Compute every foliage vertex stream from mesher attributes.
 
@@ -585,6 +598,9 @@ def compute_all_streams(
             colors = colors.reshape(-1, 4)
             colors[mask] = leaf_colors
             colors = colors.ravel()
+
+    if sky_exposure is not None and sky_occlusion > 0.0:
+        colors = apply_sky_occlusion(colors, sky_exposure, sky_occlusion)
 
     return {
         "along_branch": along_branch,

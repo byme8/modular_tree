@@ -36,8 +36,7 @@ def create_mesh_from_cpp(
     _add_geometry(mesh, cpp_mesh, flat_shading)
     _add_attributes(mesh, cpp_mesh)
     _add_uvs(mesh, cpp_mesh)
-    while len(mesh.materials) < material_slots:
-        mesh.materials.append(None)
+    _assign_tree_materials(mesh, material_slots)
     mesh.update(calc_edges=True)
 
     # The debug overlay caches a GPU batch built from these attributes; without
@@ -45,6 +44,38 @@ def create_mesh_from_cpp(
     from .viewport.foliage_debug_drawer import invalidate_debug_cache
 
     invalidate_debug_cache()
+
+
+TREE_MATERIALS = (
+    ("Bark", (0.27, 0.17, 0.10, 1.0)),
+    ("Leaf", (0.18, 0.40, 0.12, 1.0)),
+)
+
+
+def shared_tree_material(name: str, color) -> bpy.types.Material:
+    import bpy
+
+    material = bpy.data.materials.get(name)
+    if material is not None:
+        return material
+
+    material = bpy.data.materials.new(name)
+    material.diffuse_color = color
+    if material.node_tree is None:
+        material.use_nodes = True
+    shader = material.node_tree.nodes.get("Principled BSDF")
+    if shader is not None:
+        shader.inputs["Base Color"].default_value = color
+    return material
+
+
+def _assign_tree_materials(mesh: bpy.types.Mesh, slot_count: int) -> None:
+    while len(mesh.materials) < slot_count:
+        mesh.materials.append(None)
+
+    for index, (name, color) in enumerate(TREE_MATERIALS[:slot_count]):
+        if mesh.materials[index] is None:
+            mesh.materials[index] = shared_tree_material(name, color)
 
 
 def _add_geometry(mesh: bpy.types.Mesh, cpp_mesh, flat_shading: bool = False) -> None:

@@ -2,9 +2,9 @@ from bpy.utils import register_class, unregister_class
 
 from .block_fill_node import MTreeBlockFill
 from .leaf_cards_node import MTreeLeafCards
-from .linking import BLOCK_FILL_ID, LEAF_CARDS_ID, acting_surface_node, linked_surface_nodes
+from .leaf_clumps_node import MTreeLeafClumps
 
-classes = [MTreeBlockFill, MTreeLeafCards]
+classes = [MTreeBlockFill, MTreeLeafCards, MTreeLeafClumps]
 
 
 def register():

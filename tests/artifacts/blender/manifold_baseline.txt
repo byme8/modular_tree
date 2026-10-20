@@ -1,6 +1,6 @@
 # manifold build of the fixture graph (trunk + sparse branch), seed offset 0
 polygons 2521 smooth True
-material_slots 0
+material_slots ['Bark']
 
    branch_extent n=2684    min=0.00200 max=14.33323 sha=7ebc818f519dfdc8
        direction n=2684    min=-0.99786 max=1.00000 sha=890a327452b87a8c

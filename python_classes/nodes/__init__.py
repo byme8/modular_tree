@@ -6,28 +6,14 @@ from . import (
     base_types,
     debounce,
     export_nodes,
+    migration,
     node_categories,
+    pipeline,
     properties,
     sockets,
     surface_nodes,
     tree_function_nodes,
 )
-
-
-@bpy.app.handlers.persistent
-def _migrate_loaded_nodes(_file_path):
-    """Bring nodes saved by older versions up to the current socket layout.
-
-    A node's init() runs only when it is created, so sockets restored from a
-    .blend keep whatever shape they were saved with.
-    """
-    for tree in bpy.data.node_groups:
-        if tree.bl_idname != "mt_MtreeNodeTree":
-            continue
-        for node in tree.nodes:
-            migrate = getattr(node, "migrate_sockets", None)
-            if migrate is not None:
-                migrate()
 
 
 def register():
@@ -40,13 +26,17 @@ def register():
     node_categories.register()
     debounce.register()
 
-    if _migrate_loaded_nodes not in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.append(_migrate_loaded_nodes)
+    if migration.migrate_loaded_trees not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(migration.migrate_loaded_trees)
+    bpy.app.timers.register(migration.migrate_all_trees, first_interval=0.0)
 
 
 def unregister():
-    if _migrate_loaded_nodes in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.remove(_migrate_loaded_nodes)
+    if migration.migrate_loaded_trees in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(migration.migrate_loaded_trees)
+    if bpy.app.timers.is_registered(migration.migrate_all_trees):
+        bpy.app.timers.unregister(migration.migrate_all_trees)
+    pipeline.cancel_rejections()
 
     debounce.unregister()
     node_categories.unregister()

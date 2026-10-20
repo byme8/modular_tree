@@ -1,0 +1,18 @@
+format FBX separate False
+
+file .fbx
+  wexp_000_rig: 4 takes
+    wexp_000_rig_Wind_000
+    wexp_000_rig_Wind_090
+    wexp_000_rig_Wind_180
+    wexp_000_rig_Wind_270
+  wexp_001_rig: 4 takes
+    wexp_001_rig_Wind_000
+    wexp_001_rig_Wind_090
+    wexp_001_rig_Wind_180
+    wexp_001_rig_Wind_270
+  wexp_002_rig: 4 takes
+    wexp_002_rig_Wind_000
+    wexp_002_rig_Wind_090
+    wexp_002_rig_Wind_180
+    wexp_002_rig_Wind_270

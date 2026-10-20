@@ -19,6 +19,12 @@ def find_armature(obj: bpy.types.Object) -> bpy.types.Object | None:
     return armature
 
 
+def authored_world_matrix(obj: bpy.types.Object):
+    if obj.parent is None:
+        return obj.matrix_basis.copy()
+    return authored_world_matrix(obj.parent) @ obj.matrix_parent_inverse @ obj.matrix_basis
+
+
 def strip_rig(obj: bpy.types.Object, remove_armature: bool = True) -> None:
     """Removing objects from bpy.data during a node-tree update crashes Blender,
     so callers running inside one pass remove_armature=False to unbind without
@@ -26,9 +32,11 @@ def strip_rig(obj: bpy.types.Object, remove_armature: bool = True) -> None:
     """
     import bpy
 
+    from .leaf_lods import unbind_lods
     from .wind_animation import clear_rig_cache, clear_wind_actions
 
     clear_rig_cache()
+    unbind_lods(obj)
 
     if obj.data.shape_keys is not None:
         obj.shape_key_clear()
@@ -37,7 +45,7 @@ def strip_rig(obj: bpy.types.Object, remove_armature: bool = True) -> None:
         obj.modifiers.remove(modifier)
 
     if obj.parent is not None and obj.parent.type == "ARMATURE":
-        world_placement = obj.matrix_world.copy()
+        world_placement = authored_world_matrix(obj)
         obj.parent = None
         obj.matrix_world = world_placement
 

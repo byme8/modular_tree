@@ -9,10 +9,12 @@ def on_update_setting(node, context):
 
 
 class SurfaceNode(MtreeNode):
+    chain_input = ("mt_MeshSocket", "Mesh")
+    chain_output = ("mt_MeshSocket", "Mesh")
     settings_layout: tuple[str, ...] = ()
 
     def init(self, context):
-        self.add_input("mt_TreeSocket", "Tree", is_property=False)
+        self.add_chain_sockets()
 
     def draw(self, context, layout):
         if self.status_message:

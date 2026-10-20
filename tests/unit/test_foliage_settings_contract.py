@@ -1,4 +1,3 @@
-
 import ast
 import inspect
 from pathlib import Path
@@ -10,9 +9,7 @@ from foliage_debug_drawer import _stream_settings
 from foliage_streams import compute_all_streams
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-WIND_NODE = (
-    PROJECT_ROOT / "python_classes" / "nodes" / "export_nodes" / "foliage_wind_node.py"
-)
+WIND_NODE = PROJECT_ROOT / "python_classes" / "nodes" / "export_nodes" / "foliage_wind_node.py"
 ARTIFACT_DIR = Path(__file__).parent.parent / "artifacts" / "foliage_streams"
 
 RIG_ONLY_KEYS = {"build_bone_rig", "segments_per_chain", "branch_segments_per_chain", "rig_depth"}
@@ -37,11 +34,7 @@ def get_settings_keys() -> set:
         if isinstance(node, ast.FunctionDef) and node.name == "get_settings":
             for statement in ast.walk(node):
                 if isinstance(statement, ast.Dict):
-                    return {
-                        key.value
-                        for key in statement.keys
-                        if isinstance(key, ast.Constant)
-                    }
+                    return {key.value for key in statement.keys if isinstance(key, ast.Constant)}
     raise AssertionError("get_settings not found in foliage_wind_node.py")
 
 
@@ -74,7 +67,6 @@ def synthetic_tree(per_chain: int = 6) -> dict:
 
 
 class TestSettingsContract:
-
     def test_every_authored_setting_reaches_a_consumer(self):
         authored = authored_settings()
 

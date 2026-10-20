@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -24,7 +23,6 @@ ANTIPARALLEL_BAND = 0.4
 
 @dataclass
 class Bone:
-
     rest_position: NDArray[np.floating]
     rest_direction: NDArray[np.floating]
     parent: int
@@ -38,7 +36,6 @@ class Bone:
 
 @dataclass
 class BoneRig:
-
     bones: list[Bone] = field(default_factory=list)
     bone_indices_a: NDArray[np.integer] = field(default_factory=lambda: np.zeros(0, dtype=np.int32))
     bone_indices_b: NDArray[np.integer] = field(default_factory=lambda: np.zeros(0, dtype=np.int32))
@@ -173,9 +170,7 @@ def build_bones(
     ordered = sorted(chains.values(), key=lambda chain: (chain["depth"], chain["stem_id"]))
 
     def own_segments(chain):
-        return _own_segment_count(
-            chain, segments_per_chain, branch_segments_per_chain, rig_depth
-        )
+        return _own_segment_count(chain, segments_per_chain, branch_segments_per_chain, rig_depth)
 
     sample_radii: list[float] = []
     sample_positions: list[float] = []
@@ -428,9 +423,7 @@ def measure_rest_pose_error(
         return {"max_distance": 0.0, "mean_distance": 0.0, "worst_vertex": -1}
 
     starts = np.array([bone.rest_position for bone in rig.bones])
-    ends = np.array(
-        [bone.rest_position + bone.rest_direction * bone.length for bone in rig.bones]
-    )
+    ends = np.array([bone.rest_position + bone.rest_direction * bone.length for bone in rig.bones])
 
     distances = np.zeros(len(verts))
     for i, vertex in enumerate(verts):
@@ -478,9 +471,7 @@ def pose_rig(
     matrices: list[NDArray[np.floating]] = []
 
     for bone in rig.bones:
-        parent_rotation = (
-            matrices[bone.parent][:3, :3] if bone.parent >= 0 else np.eye(3)
-        )
+        parent_rotation = matrices[bone.parent][:3, :3] if bone.parent >= 0 else np.eye(3)
 
         posed_direction = parent_rotation @ bone.rest_direction
         posed_norm = float(np.linalg.norm(posed_direction))
@@ -505,9 +496,7 @@ def pose_rig(
         matrix[:3, :3] = local
         matrix[:3, 3] = pivot - local @ pivot
 
-        matrices.append(
-            matrices[bone.parent] @ matrix if bone.parent >= 0 else matrix
-        )
+        matrices.append(matrices[bone.parent] @ matrix if bone.parent >= 0 else matrix)
 
     return matrices
 

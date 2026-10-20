@@ -12,6 +12,7 @@ from .m_tree_wrapper import lazy_m_tree as m_tree
 from .mesh_utils import create_mesh_from_cpp
 from .pivot_painter.formats.foliage import FoliageExporter
 from .pivot_painter.formats.foliage_rig import FoliageRigExporter
+from .pivot_painter.leaf_lods import copy_foliage_streams
 from .pivot_painter.tree_asset import strip_rig
 from .presets import (
     TREE_PRESETS,
@@ -250,6 +251,13 @@ class ExportFoliage(bpy.types.Operator):
         min=0.0,
         max=1.0,
     )
+    sky_occlusion: bpy.props.FloatProperty(
+        name="Canopy Occlusion",
+        description="How much the leaf canopy darkens what it hides from the sky",
+        default=1.0,
+        min=0.0,
+        max=1.0,
+    )
     translucency_tip: bpy.props.FloatProperty(
         name="Translucency Tip",
         description=(
@@ -349,6 +357,7 @@ class ExportFoliage(bpy.types.Operator):
             trunk_tip_stiffness=self.trunk_tip_stiffness,
             branch_stiffness=self.branch_stiffness,
             junction_falloff=self.junction_falloff,
+            sky_occlusion=self.sky_occlusion,
         ).export()
 
         if not result.success:
@@ -356,6 +365,7 @@ class ExportFoliage(bpy.types.Operator):
             return {"CANCELLED"}
 
         message = result.message
+        copy_foliage_streams(obj)
 
         if self.build_bone_rig:
             strip_rig(obj)
@@ -394,6 +404,7 @@ class ExportFoliage(bpy.types.Operator):
         layout.prop(self, "branch_stiffness")
         layout.prop(self, "junction_falloff")
         layout.prop(self, "occlusion_base")
+        layout.prop(self, "sky_occlusion")
         layout.prop(self, "translucency_tip")
         layout.prop(self, "normal_blend")
 

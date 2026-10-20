@@ -17,6 +17,7 @@
 #include "source/meshers/manifold_mesher/ManifoldMesher.hpp"
 #include "source/meshers/block_fill/BlockFill.hpp"
 #include "source/meshers/block_fill/LeafCards.hpp"
+#include "source/meshers/block_fill/LeafClumps.hpp"
 #include "source/leaf/LeafPresets.hpp"
 #include "source/leaf/LeafShapeGenerator.hpp"
 #include "source/leaf/LeafLODGenerator.hpp"
@@ -381,6 +382,7 @@ PYBIND11_MODULE(m_tree, m) {
         .def(py::init<>())
         .def_readwrite("density", &BlockFill::density)
         .def_readwrite("scale", &BlockFill::scale)
+        .def_readwrite("trunk_block_length", &BlockFill::trunk_block_length)
         .def_readwrite("roll_variation_degrees", &BlockFill::roll_variation_degrees)
         .def_readwrite("seed", &BlockFill::seed)
         .def_readonly("block_count", &BlockFill::block_count)
@@ -397,7 +399,69 @@ PYBIND11_MODULE(m_tree, m) {
         .def_readwrite("seed", &LeafCards::seed)
         .def_readonly("card_count", &LeafCards::card_count)
         .def("count_polygons", &LeafCards::count_polygons)
-        .def("append", &LeafCards::append);
+        .def("append", &LeafCards::append, py::arg("tree"), py::arg("mesh"),
+             py::arg("keep_fraction") = 1.0f)
+        .def("card_exposure", &LeafCards::card_exposure)
+        .def("lod_cards", &LeafCards::lod_cards);
+
+    py::enum_<ClumpShape>(m, "ClumpShape")
+        .value("Bush", ClumpShape::Bush)
+        .value("Cone", ClumpShape::Cone)
+        .value("PineBranch", ClumpShape::PineBranch);
+
+    py::class_<LeafClumps>(m, "LeafClumps")
+        .def(py::init<>())
+        .def_readwrite("shape", &LeafClumps::shape)
+        .def_readwrite("voxel_size", &LeafClumps::voxel_size)
+        .def_readwrite("clump_size", &LeafClumps::clump_size)
+        .def_readwrite("width", &LeafClumps::width)
+        .def_readwrite("depth", &LeafClumps::depth)
+        .def_readwrite("height", &LeafClumps::height)
+        .def_readwrite("size_variation", &LeafClumps::size_variation)
+        .def_readwrite("density", &LeafClumps::density)
+        .def_readwrite("spread", &LeafClumps::spread)
+        .def_readwrite("tilt_variation_degrees", &LeafClumps::tilt_variation_degrees)
+        .def_readwrite("tiers", &LeafClumps::tiers)
+        .def_readwrite("erosion", &LeafClumps::erosion)
+        .def_readwrite("seed", &LeafClumps::seed)
+        .def_readwrite("max_polygons", &LeafClumps::max_polygons)
+        .def_readonly("clump_count", &LeafClumps::clump_count)
+        .def_readonly("voxel_count", &LeafClumps::voxel_count)
+        .def_readonly("polygon_count", &LeafClumps::polygon_count)
+        .def("count_polygons", &LeafClumps::count_polygons)
+        .def("append", &LeafClumps::append)
+        .def("append_lod", &LeafClumps::append_lod, py::arg("tree"), py::arg("mesh"),
+             py::arg("voxel_scale"));
+
+    m.def("sky_exposure",
+        [](py::array_t<float, py::array::c_style | py::array::forcecast> occluder_centres,
+           py::array_t<double, py::array::c_style | py::array::forcecast> occluder_areas,
+           float margin,
+           py::array_t<float, py::array::c_style | py::array::forcecast> points)
+        {
+            auto to_vectors = [](const py::array_t<float, py::array::c_style | py::array::forcecast>& array)
+            {
+                if (array.size() % 3 != 0)
+                    throw std::invalid_argument("expected an Nx3 array of points");
+                std::vector<Vector3> vectors((size_t)array.size() / 3);
+                const float* data = array.data();
+                for (size_t i = 0; i < vectors.size(); i++)
+                    vectors[i] = Vector3(data[3 * i], data[3 * i + 1], data[3 * i + 2]);
+                return vectors;
+            };
+            std::vector<Vector3> centres = to_vectors(occluder_centres);
+            if ((size_t)occluder_areas.size() != centres.size())
+                throw std::invalid_argument("one area per occluder centre");
+            std::vector<double> areas(occluder_areas.data(), occluder_areas.data() + occluder_areas.size());
+            std::vector<Vector3> queries = to_vectors(points);
+            std::vector<float> exposure;
+            {
+                py::gil_scoped_release release;
+                exposure = sky_exposure(centres, areas, margin, queries);
+            }
+            return py::array_t<float>((py::ssize_t)exposure.size(), exposure.data());
+        },
+        py::arg("occluder_centres"), py::arg("occluder_areas"), py::arg("margin"), py::arg("points"));
 
 
 #ifdef VERSION_INFO
